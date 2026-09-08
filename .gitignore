@@ -1,0 +1,17 @@
+# Entorno y dependencias de Backend (Python)
+backend/env/
+backend/venv/
+backend/.env
+__pycache__/
+*.py[cod]
+*.sqlite3
+
+# Dependencias y compilación de Frontend (Node)
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Archivos del sistema e IDE
+.vscode/
+.DS_Store
+Thumbs.db
