@@ -1,10 +1,12 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
+    CrearPedidoView,
     RegistroBodegueroView,
     CustomTokenObtainPairView,
     BodegaDetailView,
     ProductoListCreateView,
+    BodegasPublicasListView,
 )
 
 urlpatterns = [
@@ -18,4 +20,7 @@ urlpatterns = [
     
     # HU-04: Productos
     path('bodega/productos/', ProductoListCreateView.as_view(), name='mis_productos'),
+    
+    path('public/bodegas/', BodegasPublicasListView.as_view(), name='bodegas_publicas'),
+    path('public/pedidos/crear/', CrearPedidoView.as_view(), name='crear_pedido'),
 ]

@@ -43,3 +43,31 @@ class Producto(models.Model):
 
     def __str__(self):
         return f"{self.nombre} - S/. {self.precio}"
+
+class Pedido(models.Model):
+    ESTADO_CHOICES = (
+        ('PENDIENTE', 'Pendiente'),
+        ('EN_CAMINO', 'En camino'),
+        ('ENTREGADO', 'Entregado'),
+        ('CANCELADO', 'Cancelado'),
+    )
+    bodega = models.ForeignKey(Bodega, on_delete=models.CASCADE, related_name='pedidos')
+    cliente = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='pedidos_cliente', null=True, blank=True)
+    nombre_cliente = models.CharField(max_length=150)
+    telefono_cliente = models.CharField(max_length=15)
+    direccion_entrega = models.CharField(max_length=255)
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
+    estado = models.CharField(max_length=15, choices=ESTADO_CHOICES, default='PENDIENTE')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"Pedido #{self.id} - {self.nombre_cliente} (S/. {self.total})"
+
+class DetallePedido(models.Model):
+    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name='detalles')
+    producto = models.ForeignKey(Producto, on_delete=models.CASCADE)
+    cantidad = models.PositiveIntegerField(default=1)
+    precio_unitario = models.DecimalField(max_digits=8, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.cantidad}x {self.producto.nombre}"
