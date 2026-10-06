@@ -1,5 +1,6 @@
 from decimal import Decimal
 from django.db import transaction
+from django.db.models import Sum, Count, F
 from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -175,3 +176,125 @@ class CrearPedidoView(APIView):
             },
             status=status.HTTP_201_CREATED
         )
+
+# ==========================================
+# SPRINT 4: GESTIÓN DE PEDIDOS Y REPORTES
+# ==========================================
+
+# HU-13: Listar pedidos de la bodega autenticada
+class BodegaPedidosListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        bodega = Bodega.objects.filter(usuario=request.user).first()
+        if not bodega:
+            return Response({'error': 'No tienes una bodega asociada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        pedidos = Pedido.objects.filter(bodega=bodega).order_by('-created_at')
+        data = []
+        for p in pedidos:
+            detalles = [
+                {
+                    'producto': d.producto.nombre,
+                    'cantidad': d.cantidad,
+                    'precio_unitario': float(d.precio_unitario),
+                    'subtotal': float(d.cantidad * d.precio_unitario)
+                }
+                for d in p.detalles.all()
+            ]
+            data.append({
+                'id': p.id,
+                'nombre_cliente': p.nombre_cliente,
+                'telefono_cliente': p.telefono_cliente,
+                'direccion_entrega': p.direccion_entrega,
+                'total': float(p.total),
+                'estado': p.estado,
+                'created_at': p.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'items': detalles
+            })
+        return Response(data, status=status.HTTP_200_OK)
+
+
+# HU-14: Cambiar estado del pedido con reglas de validación
+class CambiarEstadoPedidoView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk):
+        bodega = Bodega.objects.filter(usuario=request.user).first()
+        pedido = Pedido.objects.filter(id=pk, bodega=bodega).first()
+        if not pedido:
+            return Response({'error': 'Pedido no encontrado o no pertenece a tu bodega.'}, status=status.HTTP_404_NOT_FOUND)
+
+        nuevo_estado = request.data.get('estado')
+        estados_validos = [choice[0] for choice in Pedido.ESTADO_CHOICES]
+
+        if nuevo_estado not in estados_validos:
+            return Response({'error': f'Estado no válido. Opciones: {estados_validos}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Regla de negocio: No se puede modificar un pedido ya entregado ni cancelado
+        if pedido.estado in ['ENTREGADO', 'CANCELADO']:
+            return Response({'error': f'No se puede modificar un pedido que ya está {pedido.estado}.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        pedido.estado = nuevo_estado
+        pedido.save()
+
+        return Response({
+            'mensaje': f'Estado del pedido #{pedido.id} actualizado a {nuevo_estado}.',
+            'pedido_id': pedido.id,
+            'nuevo_estado': pedido.estado
+        }, status=status.HTTP_200_OK)
+
+
+# HU-15: Consultar seguimiento de pedido (público para el cliente con ID)
+class SeguimientoPedidoView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, pk):
+        pedido = Pedido.objects.filter(id=pk).first()
+        if not pedido:
+            return Response({'error': 'Pedido no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({
+            'pedido_id': pedido.id,
+            'estado': pedido.estado,
+            'bodega': {
+                'nombre': pedido.bodega.nombre_comercial,
+                'direccion': pedido.bodega.direccion,
+                'latitud': float(pedido.bodega.latitud),
+                'longitud': float(pedido.bodega.longitud),
+                'telefono': pedido.bodega.telefono
+            },
+            'direccion_entrega': pedido.direccion_entrega,
+            'total': float(pedido.total),
+            'created_at': pedido.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        }, status=status.HTTP_200_OK)
+
+
+# HU-16: Reporte de ventas para el bodeguero (Agregaciones ORM)
+class ReporteVentasView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        bodega = Bodega.objects.filter(usuario=request.user).first()
+        if not bodega:
+            return Response({'error': 'No tienes una bodega asociada.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Métricas principales de órdenes entregadas
+        pedidos_entregados = Pedido.objects.filter(bodega=bodega, estado='ENTREGADO')
+        total_ventas = pedidos_entregados.aggregate(total=Sum('total'))['total'] or Decimal('0.00')
+        cantidad_pedidos = pedidos_entregados.count()
+
+        # Top productos más vendidos
+        top_productos = (
+            DetallePedido.objects.filter(pedido__bodega=bodega, pedido__estado='ENTREGADO')
+            .values('producto__nombre')
+            .annotate(unidades_vendidas=Sum('cantidad'), total_generado=Sum(F('cantidad') * F('precio_unitario')))
+            .order_by('-unidades_vendidas')[:5]
+        )
+
+        return Response({
+            'total_ventas': float(total_ventas),
+            'cantidad_pedidos_completados': cantidad_pedidos,
+            'pedidos_totales_registrados': Pedido.objects.filter(bodega=bodega).count(),
+            'top_productos': list(top_productos)
+        }, status=status.HTTP_200_OK)

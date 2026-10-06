@@ -47,6 +47,7 @@ class Producto(models.Model):
 class Pedido(models.Model):
     ESTADO_CHOICES = (
         ('PENDIENTE', 'Pendiente'),
+        ('EN_PREPARACIÓN', 'En preparación'),
         ('EN_CAMINO', 'En camino'),
         ('ENTREGADO', 'Entregado'),
         ('CANCELADO', 'Cancelado'),
