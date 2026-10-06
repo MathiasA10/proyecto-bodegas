@@ -52,6 +52,15 @@ class Pedido(models.Model):
         ('ENTREGADO', 'Entregado'),
         ('CANCELADO', 'Cancelado'),
     )
+    METODO_ENTREGA_CHOICES = (
+        ('RECOJO', 'Recojo en tienda'),
+        ('DELIVERY', 'Despacho a domicilio'),
+    )
+    METODO_PAGO_CHOICES = (
+        ('YAPE', 'Yape'),
+        ('PLIN', 'Plin'),
+        ('CONTRA_ENTREGA', 'Contra entrega'),
+    )
     bodega = models.ForeignKey(Bodega, on_delete=models.CASCADE, related_name='pedidos')
     cliente = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='pedidos_cliente', null=True, blank=True)
     nombre_cliente = models.CharField(max_length=150)
@@ -59,6 +68,10 @@ class Pedido(models.Model):
     direccion_entrega = models.CharField(max_length=255)
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0.0)
     estado = models.CharField(max_length=15, choices=ESTADO_CHOICES, default='PENDIENTE')
+    metodo_entrega = models.CharField(max_length=15, choices=METODO_ENTREGA_CHOICES, default='RECOJO')
+    metodo_pago = models.CharField(max_length=15, choices=METODO_PAGO_CHOICES, default='CONTRA_ENTREGA')
+    repartidor_lat = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
+    repartidor_lng = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

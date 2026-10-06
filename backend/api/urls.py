@@ -11,6 +11,7 @@ from .views import (
     CambiarEstadoPedidoView,
     SeguimientoPedidoView,
     ReporteVentasView,
+    ActualizarRepartidorView,
 )
 
 urlpatterns = [
@@ -27,7 +28,8 @@ urlpatterns = [
     
     # Sprint 4: Gestión de pedidos, estados y reportes
     path('bodega/pedidos/', BodegaPedidosListView.as_view(), name='bodega_pedidos'),
-    path('bodega/pedidos//estado/', CambiarEstadoPedidoView.as_view(), name='cambiar_estado_pedido'),
+    path('bodega/pedidos/<int:pk>/estado/', CambiarEstadoPedidoView.as_view(), name='cambiar_estado_pedido'),
+    path('bodega/pedidos/<int:pk>/repartidor/', ActualizarRepartidorView.as_view(), name='actualizar_repartidor'),
     path('bodega/reportes/ventas/', ReporteVentasView.as_view(), name='reporte_ventas'),
-    path('public/pedidos//seguimiento/', SeguimientoPedidoView.as_view(), name='seguimiento_pedido'),
+    path('public/pedidos/<int:pk>/seguimiento/', SeguimientoPedidoView.as_view(), name='seguimiento_pedido'),
 ]

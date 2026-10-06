@@ -151,7 +151,9 @@ class CrearPedidoView(APIView):
             telefono_cliente=data.get('telefono_cliente', ''),
             direccion_entrega=data.get('direccion_entrega', ''),
             total=total,
-            estado='PENDIENTE'
+            estado='PENDIENTE',
+            metodo_entrega=data.get('metodo_entrega', 'RECOJO'),
+            metodo_pago=data.get('metodo_pago', 'CONTRA_ENTREGA')
         )
 
         # 3. Guardar detalles del pedido y descontar el inventario
@@ -254,6 +256,13 @@ class SeguimientoPedidoView(APIView):
         if not pedido:
             return Response({'error': 'Pedido no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
 
+        repartidor = None
+        if pedido.repartidor_lat and pedido.repartidor_lng:
+            repartidor = {
+                'latitud': float(pedido.repartidor_lat),
+                'longitud': float(pedido.repartidor_lng)
+            }
+
         return Response({
             'pedido_id': pedido.id,
             'estado': pedido.estado,
@@ -266,8 +275,39 @@ class SeguimientoPedidoView(APIView):
             },
             'direccion_entrega': pedido.direccion_entrega,
             'total': float(pedido.total),
-            'created_at': pedido.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            'created_at': pedido.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'repartidor': repartidor
         }, status=status.HTTP_200_OK)
+
+
+# HU-15 Extra: Actualizar ubicación del repartidor (solo bodeguero)
+class ActualizarRepartidorView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk):
+        bodega = Bodega.objects.filter(usuario=request.user).first()
+        pedido = Pedido.objects.filter(id=pk, bodega=bodega).first()
+        if not pedido:
+            return Response({'error': 'Pedido no encontrado o no pertenece a tu bodega.'}, status=status.HTTP_404_NOT_FOUND)
+
+        lat = request.data.get('repartidor_lat')
+        lng = request.data.get('repartidor_lng')
+
+        if lat is None or lng is None:
+            return Response({'error': 'Se requieren repartidor_lat y repartidor_lng'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            pedido.repartidor_lat = lat
+            pedido.repartidor_lng = lng
+            pedido.save()
+            return Response({
+                'mensaje': 'Ubicación del repartidor actualizada',
+                'pedido_id': pedido.id,
+                'repartidor_lat': float(pedido.repartidor_lat),
+                'repartidor_lng': float(pedido.repartidor_lng)
+            }, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # HU-16: Reporte de ventas para el bodeguero (Agregaciones ORM)

@@ -16,6 +16,10 @@ class RegistroUsuarioSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop('password')
+        # Convertir DNI vacío a None para evitar conflicto unique constraint
+        if validated_data.get('dni') == '':
+            validated_data['dni'] = None
+        
         if 'rol' not in validated_data or not validated_data['rol']:
             validated_data['rol'] = 'BODEGUERO'
         
