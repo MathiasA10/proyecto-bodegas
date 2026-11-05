@@ -6,6 +6,7 @@ from django.db import transaction
 from django.db.models import Sum, Count, F
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
@@ -76,6 +77,8 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'login'
 
 # HU-01: Registro Bodeguero
 class RegistroBodegueroView(generics.CreateAPIView):
@@ -83,6 +86,8 @@ class RegistroBodegueroView(generics.CreateAPIView):
     serializer_class = RegistroUsuarioSerializer
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'registro'
 
 # HU-03: Registrar y Consultar Perfil de Bodega (GET / POST idempotente)
 class BodegaDetailView(generics.GenericAPIView):
@@ -231,6 +236,8 @@ class BodegaPublicaDetailView(generics.RetrieveAPIView):
 # Endpoint para procesar el pedido del cliente y descontar stock transaccional
 class CrearPedidoView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsCliente]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'pedido_create'
 
     @transaction.atomic
     def post(self, request):

@@ -9,6 +9,7 @@ from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
 from .models import PasswordResetOTP, Usuario
@@ -36,6 +37,8 @@ def _respuesta_codigo_invalido():
 class SolicitarCodigoPasswordResetView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset_request'
 
     def post(self, request):
         email = str(request.data.get('email', '')).strip().lower()
@@ -95,6 +98,8 @@ class SolicitarCodigoPasswordResetView(APIView):
 class VerificarCodigoPasswordResetView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset_verify'
 
     def post(self, request):
         email = str(request.data.get('email', '')).strip().lower()
@@ -136,6 +141,8 @@ class VerificarCodigoPasswordResetView(APIView):
 class ConfirmarPasswordResetView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'password_reset_confirm'
 
     def post(self, request):
         token = str(request.data.get('reset_token', '')).strip()

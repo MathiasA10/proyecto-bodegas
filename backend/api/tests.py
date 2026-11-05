@@ -1,7 +1,11 @@
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import Bodega, Categoria, PasswordResetOTP, Producto
 from .utils.geo import haversine_km
@@ -70,6 +74,28 @@ class BaseApiTestCase(TestCase):
         }
         payload.update(overrides)
         return self.client.post('/api/public/pedidos/crear/', payload, format='json')
+
+
+class ThrottleTests(BaseApiTestCase):
+    def test_login_rate_limit(self):
+        cache.clear()
+        self.client.force_authenticate(user=None)
+
+        with patch.object(ScopedRateThrottle, 'THROTTLE_RATES', {'login': '2/min'}):
+            for _ in range(2):
+                res = self.client.post(
+                    '/api/auth/login/',
+                    {'email': self.user.email, 'password': 'secret123'},
+                    format='json',
+                )
+                self.assertEqual(res.status_code, 200, res.data)
+
+            res = self.client.post(
+                '/api/auth/login/',
+                {'email': self.user.email, 'password': 'secret123'},
+                format='json',
+            )
+            self.assertEqual(res.status_code, 429)
 
 
 class BodegasPublicasTests(BaseApiTestCase):
