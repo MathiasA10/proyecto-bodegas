@@ -28,6 +28,14 @@ npm run build
 
 El frontend apunta por defecto a `http://127.0.0.1:8000/api/`; el backend debe correr en el puerto 8000. Se puede sobreescribir con `VITE_API_URL`.
 
+## Despliegue en Render
+
+- `render.yaml` define dos servicios en la región `ohio`: `proyecto-bodegas-api` (Django, plan free) y `proyecto-bodegas-web` (React static site).
+- La API usa la Internal Database URL de `DB-CI-V2` y `gunicorn`; el frontend usa `VITE_API_URL=https://proyecto-bodegas-api.onrender.com/api/`.
+- El static site requiere el rewrite `/* -> /index.html` para React Router.
+- Variables sensibles (`DATABASE_URL`, `CLOUDINARY_URL`, `BREVO_API_KEY`, `DEFAULT_FROM_EMAIL`) se configuran en Render, no en el repositorio.
+- Render Free duerme el Web Service tras 15 minutos sin tráfico y la PostgreSQL Free expira a los 30 días.
+
 ## Entorno y precauciones
 
 - La base de datos es PostgreSQL remota compartida, configurada en `backend/.env` mediante `DATABASE_URL`.
@@ -36,7 +44,7 @@ El frontend apunta por defecto a `http://127.0.0.1:8000/api/`; el backend debe c
 - La migración `api/0007` (categorías por bodega, imagen Cloudinary y OTP) ya está aplicada en la BD remota.
 - La migración `api/0008` (estado `LISTO_PARA_RECOGER` y conversión de pedidos de recojo) ya está aplicada en la BD remota.
 - Imágenes de productos: `CLOUDINARY_URL` en `backend/.env`; la subida se hace desde el backend con `cloudinary.uploader`.
-- Recuperación de contraseña por OTP de 6 dígitos enviado por Gmail SMTP: `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `DEFAULT_FROM_EMAIL`. Sin credenciales usa consola en desarrollo.
+- Recuperación de contraseña por OTP de 6 dígitos: en producción se envía con Brevo HTTP API mediante `BREVO_API_KEY` y `DEFAULT_FROM_EMAIL`; sin esa clave usa consola en desarrollo.
 - `core/test_settings.py` usa SQLite en memoria y email locmem para tests; no toca la BD remota.
 - No commitear cambios sin pedido explícito.
 
@@ -122,11 +130,14 @@ Convenciones:
 - Datos E2E eliminados; no deben quedar usuarios, bodegas, productos ni pedidos con prefijo `E2E`.
 - Tests backend: 32 aprobados.
 - `npm run lint` y `npm run build` aprobados.
+- Configuración de despliegue `render.yaml` y Brevo implementada; falta crear el Blueprint y verificar OTP real en Render.
 - Advertencia no bloqueante de Vite: bundle mayor a 500 kB y rutas de imágenes de Leaflet sin resolver en build.
+- Advertencia no bloqueante de `check --deploy`: faltan `SECURE_HSTS_SECONDS` y `SECURE_SSL_REDIRECT`; Render ya fuerza HTTPS en el borde.
 
 ## Pendientes sugeridos
 
-- Configurar credenciales Gmail SMTP y verificar envío real de OTP.
-- Datos demo/seed y configuración de despliegue.
+- Verificar envío real de OTP con Brevo en Render.
+- Crear el Blueprint en Render y validar ambos servicios.
+- Datos demo/seed.
 - Code-splitting del bundle del frontend.
 - Otros pendientes: endurecer rate limiting, revisar accesibilidad y automatizar E2E con Playwright.

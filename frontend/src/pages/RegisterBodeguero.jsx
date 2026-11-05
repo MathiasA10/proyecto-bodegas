@@ -34,7 +34,7 @@ export default function RegisterBodeguero() {
           .join(' | ');
         setError(msg);
       } else {
-        setError('Error de comunicación con el backend (127.0.0.1:8000)');
+        setError('No se pudo conectar con el servidor. Intenta nuevamente.');
       }
     }
   };
