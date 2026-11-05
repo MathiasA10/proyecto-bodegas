@@ -1,151 +1,162 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import {
+  BarChart2,
+  DollarSign,
+  Loader2,
+  Package,
+  RefreshCw,
+  ShoppingBag,
+  TrendingUp,
+} from 'lucide-react';
+
 import api from '../api/client';
-import { BarChart2, ShoppingBag, DollarSign, TrendingUp, Loader2, RefreshCw, Package } from 'lucide-react';
+import Toast from '../components/Toast';
 
 export default function BodegaReportes() {
   const [reporte, setReporte] = useState(null);
   const [loading, setLoading] = useState(true);
   const [mensaje, setMensaje] = useState({ tipo: '', texto: '' });
 
-  useEffect(() => {
-    cargarReporte();
-  }, []);
-
   const cargarReporte = async () => {
     setLoading(true);
     try {
       const res = await api.get('bodega/reportes/ventas/');
       setReporte(res.data);
-    } catch (err) {
-      console.error('Error al cargar reporte:', err);
-      setMensaje({ tipo: 'error', texto: 'Error al cargar el reporte de ventas' });
+    } catch {
+      setMensaje({ tipo: 'error', texto: 'Error al cargar el reporte de ventas.' });
     } finally {
       setLoading(false);
     }
   };
 
-  const formatNumber = (num) => {
-    return new Intl.NumberFormat('es-PE').format(num);
-  };
+  useEffect(() => {
+    cargarReporte();
+  }, []);
 
-  const formatCurrency = (num) => {
-    return new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' }).format(num);
-  };
+  const formatNumber = (num) => new Intl.NumberFormat('es-PE').format(num);
+
+  const formatCurrency = (num) =>
+    new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' }).format(num);
 
   if (loading) {
     return (
       <div className="flex justify-center py-12">
-        <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+        <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
       </div>
     );
   }
 
   if (!reporte) {
     return (
-      <div className="text-center py-12 text-gray-500">
-        <BarChart2 size={48} className="mx-auto mb-4 text-gray-300" />
-        <p>No se pudo cargar el reporte</p>
+      <div className="py-12 text-center text-slate-500">
+        <BarChart2 size={48} className="mx-auto mb-4 text-slate-300" />
+        <p className="text-sm">No se pudo cargar el reporte.</p>
       </div>
     );
   }
 
+  const ticketPromedio =
+    reporte.cantidad_pedidos_completados > 0
+      ? (reporte.total_ventas || 0) / reporte.cantidad_pedidos_completados
+      : 0;
+
+  const tasaCompletacion =
+    reporte.pedidos_totales_registrados > 0
+      ? (reporte.cantidad_pedidos_completados / reporte.pedidos_totales_registrados) * 100
+      : 0;
+
+  const tarjetas = [
+    {
+      titulo: 'Total recaudado',
+      valor: formatCurrency(reporte.total_ventas || 0),
+      detalle: 'Solo órdenes entregadas',
+      icono: DollarSign,
+      clases: 'bg-brand-50 text-brand-700',
+    },
+    {
+      titulo: 'Pedidos completados',
+      valor: formatNumber(reporte.cantidad_pedidos_completados || 0),
+      detalle: 'Órdenes en estado Entregado',
+      icono: ShoppingBag,
+      clases: 'bg-blue-50 text-blue-700',
+    },
+    {
+      titulo: 'Pedidos registrados',
+      valor: formatNumber(reporte.pedidos_totales_registrados || 0),
+      detalle: 'Incluye todos los estados',
+      icono: TrendingUp,
+      clases: 'bg-accent-100 text-accent-600',
+    },
+  ];
+
   return (
-    <div className="space-y-6">
-      {mensaje.texto && (
-        <div className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
-          mensaje.tipo === 'success' 
-            ? 'bg-green-50 border border-green-200 text-green-700' 
-            : 'bg-red-50 border border-red-200 text-red-700'
-        }`}>
-          <span>{mensaje.texto}</span>
-        </div>
-      )}
+    <div className="space-y-5">
+      <Toast
+        tipo={mensaje.tipo || 'success'}
+        texto={mensaje.texto}
+        onClose={() => setMensaje({ tipo: '', texto: '' })}
+      />
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-800">Reporte de Ventas (HU-16)</h2>
-        <button 
-          onClick={cargarReporte} 
+        <h2 className="text-lg font-extrabold text-slate-900">Reporte de ventas</h2>
+        <button
+          type="button"
+          onClick={cargarReporte}
           disabled={loading}
-          className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
+          className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
         >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Actualizar
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualizar
         </button>
       </div>
 
-      {/* Cards principales */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-blue-600">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-blue-100 rounded-lg">
-              <DollarSign className="w-6 h-6 text-blue-600" />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {tarjetas.map(({ titulo, valor, detalle, icono: Icono, clases }) => (
+          <div key={titulo} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center gap-3">
+              <span className={`flex h-11 w-11 items-center justify-center rounded-xl ${clases}`}>
+                <Icono size={20} />
+              </span>
+              <div>
+                <p className="text-xs font-medium text-slate-500">{titulo}</p>
+                <p className="text-xl font-extrabold text-slate-900">{valor}</p>
+              </div>
             </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium">Total Recaudado</p>
-              <p className="text-2xl font-bold text-gray-800">{formatCurrency(reporte.total_ventas || 0)}</p>
-            </div>
+            <p className="mt-2 text-[11px] text-slate-400">{detalle}</p>
           </div>
-          <p className="mt-2 text-xs text-gray-500">Solo órdenes entregadas</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-green-600">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-green-100 rounded-lg">
-              <ShoppingBag className="w-6 h-6 text-green-600" />
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium">Pedidos Completados</p>
-              <p className="text-2xl font-bold text-gray-800">{formatNumber(reporte.cantidad_pedidos_completados || 0)}</p>
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-gray-500">Órdenes en estado Entregado</p>
-        </div>
-
-        <div className="bg-white p-5 rounded-xl shadow-sm border-l-4 border-purple-600">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-purple-100 rounded-lg">
-              <TrendingUp className="w-6 h-6 text-purple-600" />
-            </div>
-            <div>
-              <p className="text-xs text-gray-500 font-medium">Total Pedidos Registrados</p>
-              <p className="text-2xl font-bold text-gray-800">{formatNumber(reporte.pedidos_totales_registrados || 0)}</p>
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-gray-500">Incluye todos los estados</p>
-        </div>
+        ))}
       </div>
 
-      {/* Top Productos */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        <div className="p-4 border-b bg-gray-50">
-          <h3 className="text-md font-semibold text-gray-800 flex items-center gap-2">
-            <Package className="w-5 h-5 text-purple-600" />
-            Top 5 Productos Más Vendidos
-          </h3>
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50 p-4">
+          <Package size={18} className="text-brand-600" />
+          <h3 className="text-sm font-bold text-slate-900">Top 5 productos más vendidos</h3>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b">
+          <table className="w-full text-left text-sm">
+            <thead className="border-b border-slate-100 bg-white">
               <tr>
-                <th className="p-3 text-left font-medium text-gray-600">#</th>
-                <th className="p-3 text-left font-medium text-gray-600">Producto</th>
-                <th className="p-3 text-right font-medium text-gray-600">Unidades Vendidas</th>
-                <th className="p-3 text-right font-medium text-gray-600">Total Generado</th>
+                <th className="p-3 font-semibold text-slate-500">#</th>
+                <th className="p-3 font-semibold text-slate-500">Producto</th>
+                <th className="p-3 text-right font-semibold text-slate-500">Unidades</th>
+                <th className="p-3 text-right font-semibold text-slate-500">Total generado</th>
               </tr>
             </thead>
-            <tbody className="divide-y">
+            <tbody className="divide-y divide-slate-100">
               {(reporte.top_productos || []).length === 0 ? (
                 <tr>
-                  <td colSpan="4" className="p-6 text-center text-gray-500">
-                    No hay productos vendidos aún
+                  <td colSpan="4" className="p-6 text-center text-slate-400">
+                    No hay productos vendidos aún.
                   </td>
                 </tr>
               ) : (
                 (reporte.top_productos || []).map((prod, index) => (
-                  <tr key={prod.producto__nombre} className="hover:bg-gray-50">
-                    <td className="p-3 text-gray-500 font-medium">{index + 1}</td>
-                    <td className="p-3 font-medium text-gray-800">{prod.producto__nombre}</td>
-                    <td className="p-3 text-right text-gray-600">{formatNumber(prod.unidades_vendidas || 0)}</td>
-                    <td className="p-3 text-right font-semibold text-gray-800">
+                  <tr key={prod.producto__nombre} className="hover:bg-slate-50">
+                    <td className="p-3 font-medium text-slate-400">{index + 1}</td>
+                    <td className="p-3 font-medium text-slate-800">{prod.producto__nombre}</td>
+                    <td className="p-3 text-right text-slate-600">
+                      {formatNumber(prod.unidades_vendidas || 0)}
+                    </td>
+                    <td className="p-3 text-right font-semibold text-slate-800">
                       {formatCurrency(prod.total_generado || 0)}
                     </td>
                   </tr>
@@ -156,24 +167,19 @@ export default function BodegaReportes() {
         </div>
       </div>
 
-      {/* Resumen adicional */}
-      <div className="bg-white rounded-xl shadow-sm p-6">
-        <h3 className="text-md font-semibold text-gray-800 mb-4">Resumen del Negocio</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-gray-500 mb-1">Ticket promedio</p>
-            <p className="font-bold text-gray-800">
-              {reporte.cantidad_pedidos_completados > 0 
-                ? formatCurrency((reporte.total_ventas || 0) / reporte.cantidad_pedidos_completados)
-                : 'S/. 0.00'}
+      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <h3 className="mb-4 text-sm font-bold text-slate-900">Resumen del negocio</h3>
+        <div className="grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+          <div className="rounded-xl bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Ticket promedio</p>
+            <p className="mt-1 text-lg font-extrabold text-slate-900">
+              {formatCurrency(ticketPromedio)}
             </p>
           </div>
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-gray-500 mb-1">Tasa de completación</p>
-            <p className="font-bold text-gray-800">
-              {reporte.pedidos_totales_registrados > 0
-                ? `${((reporte.cantidad_pedidos_completados / reporte.pedidos_totales_registrados) * 100).toFixed(1)}%`
-                : '0%'}
+          <div className="rounded-xl bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Tasa de completación</p>
+            <p className="mt-1 text-lg font-extrabold text-slate-900">
+              {tasaCompletacion.toFixed(1)}%
             </p>
           </div>
         </div>

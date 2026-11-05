@@ -1,26 +1,155 @@
-import { useState, useEffect } from 'react';
-import api from '../api/client';
-import { 
-  ShoppingBag, CheckCircle2, AlertCircle, Truck, 
-  MapPin, Phone, Clock, MoreVertical, MapPin as MapPinIcon,
-  RefreshCw, Loader2
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import {
+  Loader2,
+  MapPin as MapPinIcon,
+  MoreVertical,
+  Package,
+  Phone,
+  RefreshCw,
+  ShoppingBag,
+  Truck,
 } from 'lucide-react';
 
+import api from '../api/client';
+import Toast from '../components/Toast';
+import '../utils/fixLeafletIcon';
+
 const ESTADOS = [
-  { value: 'PENDIENTE', label: 'Pendiente', color: 'bg-yellow-100 text-yellow-800' },
-  { value: 'EN_PREPARACIÓN', label: 'En preparación', color: 'bg-blue-100 text-blue-800' },
-  { value: 'EN_CAMINO', label: 'En camino', color: 'bg-purple-100 text-purple-800' },
-  { value: 'ENTREGADO', label: 'Entregado', color: 'bg-green-100 text-green-800' },
-  { value: 'CANCELADO', label: 'Cancelado', color: 'bg-red-100 text-red-800' },
+  { value: 'PENDIENTE', label: 'Pendiente', color: 'bg-accent-100 text-accent-600' },
+  { value: 'EN_PREPARACIÓN', label: 'En preparación', color: 'bg-blue-100 text-blue-700' },
+  { value: 'EN_CAMINO', label: 'En camino', color: 'bg-purple-100 text-purple-700' },
+  { value: 'LISTO_PARA_RECOGER', label: 'Listo para recoger', color: 'bg-brand-100 text-brand-800' },
+  { value: 'ENTREGADO', label: 'Entregado', color: 'bg-brand-100 text-brand-800' },
+  { value: 'CANCELADO', label: 'Cancelado', color: 'bg-red-100 text-red-700' },
 ];
 
-const TRANSICIONES_VALIDAS = {
-  'PENDIENTE': ['EN_PREPARACIÓN', 'CANCELADO'],
-  'EN_PREPARACIÓN': ['EN_CAMINO', 'CANCELADO'],
-  'EN_CAMINO': ['ENTREGADO', 'CANCELADO'],
-  'ENTREGADO': [],
-  'CANCELADO': [],
+const TRANSICIONES_DELIVERY = {
+  PENDIENTE: ['EN_PREPARACIÓN', 'CANCELADO'],
+  EN_PREPARACIÓN: ['EN_CAMINO', 'CANCELADO'],
+  EN_CAMINO: ['ENTREGADO', 'CANCELADO'],
+  ENTREGADO: [],
+  CANCELADO: [],
 };
+
+const TRANSICIONES_RECOJO = {
+  PENDIENTE: ['EN_PREPARACIÓN', 'CANCELADO'],
+  EN_PREPARACIÓN: ['LISTO_PARA_RECOGER', 'CANCELADO'],
+  LISTO_PARA_RECOGER: ['ENTREGADO', 'CANCELADO'],
+  ENTREGADO: [],
+  CANCELADO: [],
+};
+
+function obtenerTransiciones(pedido) {
+  const mapa =
+    pedido.metodo_entrega === 'RECOJO'
+      ? TRANSICIONES_RECOJO
+      : TRANSICIONES_DELIVERY;
+  return mapa[pedido.estado] || [];
+}
+
+function MapaRepartidor({ posicion, onSelect }) {
+  useMapEvents({
+    click(e) {
+      onSelect({ lat: e.latlng.lat, lng: e.latlng.lng });
+    },
+  });
+  return <Marker position={[posicion.lat, posicion.lng]} />;
+}
+
+function MenuAcciones({ pedido, transiciones, puedeVerRepartidor, onCambiarEstado, onAbrirMapa }) {
+  const [abierto, setAbierto] = useState(false);
+  const [posicion, setPosicion] = useState({ top: 0, left: 0 });
+  const botonRef = useRef(null);
+  const menuRef = useRef(null);
+
+  const abrir = () => {
+    const rect = botonRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const ancho = 190;
+    setPosicion({
+      top: rect.bottom + 4,
+      left: Math.max(8, Math.min(rect.right - ancho, window.innerWidth - ancho - 8)),
+    });
+    setAbierto(true);
+  };
+
+  useEffect(() => {
+    if (!abierto) return undefined;
+
+    const cerrar = (evento) => {
+      const dentroBoton = botonRef.current?.contains(evento.target);
+      const dentroMenu = menuRef.current?.contains(evento.target);
+      if (!dentroBoton && !dentroMenu) setAbierto(false);
+    };
+    const cerrarPorScroll = () => setAbierto(false);
+    const cerrarPorTecla = (evento) => {
+      if (evento.key === 'Escape') setAbierto(false);
+    };
+
+    document.addEventListener('mousedown', cerrar);
+    window.addEventListener('scroll', cerrarPorScroll, true);
+    window.addEventListener('resize', cerrarPorScroll);
+    document.addEventListener('keydown', cerrarPorTecla);
+    return () => {
+      document.removeEventListener('mousedown', cerrar);
+      window.removeEventListener('scroll', cerrarPorScroll, true);
+      window.removeEventListener('resize', cerrarPorScroll);
+      document.removeEventListener('keydown', cerrarPorTecla);
+    };
+  }, [abierto]);
+
+  const ejecutar = (accion) => {
+    setAbierto(false);
+    accion();
+  };
+
+  return (
+    <>
+      <button
+        ref={botonRef}
+        type="button"
+        onClick={() => (abierto ? setAbierto(false) : abrir())}
+        className="rounded-lg p-1.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-700"
+        aria-label="Acciones del pedido"
+        aria-expanded={abierto}
+      >
+        <MoreVertical size={18} />
+      </button>
+
+      {abierto &&
+        createPortal(
+          <div
+            ref={menuRef}
+            style={{ position: 'fixed', top: posicion.top, left: posicion.left, width: 190 }}
+            className="z-[1000] overflow-hidden rounded-xl border border-slate-200 bg-white py-1 shadow-xl"
+          >
+            {transiciones.map((estado) => (
+              <button
+                key={estado}
+                type="button"
+                onClick={() => ejecutar(() => onCambiarEstado(pedido.id, estado))}
+                className="w-full px-3 py-2 text-left text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                {ESTADOS.find((e) => e.value === estado)?.label}
+              </button>
+            ))}
+            {puedeVerRepartidor && (
+              <button
+                type="button"
+                onClick={() => ejecutar(() => onAbrirMapa(pedido))}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs font-medium text-purple-600 transition hover:bg-purple-50"
+              >
+                <MapPinIcon size={14} /> Ubicar repartidor
+              </button>
+            )}
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
 
 export default function BodegaPedidos() {
   const [pedidos, setPedidos] = useState([]);
@@ -30,45 +159,39 @@ export default function BodegaPedidos() {
   const [repartidorPos, setRepartidorPos] = useState({ lat: -12.046374, lng: -77.042793 });
   const [guardandoRepartidor, setGuardandoRepartidor] = useState(false);
 
-  useEffect(() => {
-    cargarPedidos();
-  }, []);
-
   const cargarPedidos = async () => {
     setLoading(true);
     try {
       const res = await api.get('bodega/pedidos/');
       setPedidos(res.data);
-    } catch (err) {
-      console.error('Error al cargar pedidos:', err);
-      setMensaje({ tipo: 'error', texto: 'Error al cargar los pedidos' });
+    } catch {
+      setMensaje({ tipo: 'error', texto: 'Error al cargar los pedidos.' });
     } finally {
       setLoading(false);
     }
   };
 
+  useEffect(() => {
+    cargarPedidos();
+  }, []);
+
   const handleCambiarEstado = async (pedidoId, nuevoEstado) => {
     try {
       await api.patch(`bodega/pedidos/${pedidoId}/estado/`, { estado: nuevoEstado });
-      setMensaje({ tipo: 'success', texto: `Estado actualizado a ${nuevoEstado}` });
+      const etiqueta = getEstadoInfo(nuevoEstado).label;
+      setMensaje({ tipo: 'success', texto: `Estado actualizado a "${etiqueta}".` });
       cargarPedidos();
     } catch (err) {
-      const errMsg = err.response?.data?.error || 'Error al cambiar estado';
-      setMensaje({ tipo: 'error', texto: errMsg });
+      setMensaje({
+        tipo: 'error',
+        texto: err.response?.data?.error || 'Error al cambiar estado.',
+      });
     }
   };
 
   const abrirModalRepartidor = (pedido) => {
     setModalRepartidor(pedido);
     setRepartidorPos({ lat: -12.046374, lng: -77.042793 });
-  };
-
-  const cerrarModalRepartidor = () => {
-    setModalRepartidor(null);
-  };
-
-  const handleMapClick = (e) => {
-    setRepartidorPos({ lat: e.latlng.lat, lng: e.latlng.lng });
   };
 
   const guardarRepartidor = async () => {
@@ -79,181 +202,213 @@ export default function BodegaPedidos() {
         repartidor_lat: repartidorPos.lat,
         repartidor_lng: repartidorPos.lng
       });
-      setMensaje({ tipo: 'success', texto: 'Ubicación del repartidor actualizada' });
-      cerrarModalRepartidor();
+      setMensaje({ tipo: 'success', texto: 'Ubicación del repartidor actualizada.' });
+      setModalRepartidor(null);
       cargarPedidos();
     } catch (err) {
-      const errMsg = err.response?.data?.error || 'Error al guardar ubicación';
-      setMensaje({ tipo: 'error', texto: errMsg });
+      setMensaje({
+        tipo: 'error',
+        texto: err.response?.data?.error || 'Error al guardar ubicación.',
+      });
     } finally {
       setGuardandoRepartidor(false);
     }
   };
 
-  const getTransicionesValidas = (estadoActual) => {
-    return TRANSICIONES_VALIDAS[estadoActual] || [];
-  };
-
-  const puedeCambiarA = (estadoActual, nuevoEstado) => {
-    if (estadoActual === 'ENTREGADO' || estadoActual === 'CANCELADO') return false;
-    return getTransicionesValidas(estadoActual).includes(nuevoEstado);
-  };
-
-  const getEstadoInfo = (estado) => {
-    return ESTADOS.find(e => e.value === estado) || { label: estado, color: 'bg-gray-100 text-gray-800' };
-  };
+  const getEstadoInfo = (estado) =>
+    ESTADOS.find((e) => e.value === estado) || {
+      label: estado,
+      color: 'bg-slate-100 text-slate-600',
+    };
 
   const formatFecha = (fechaStr) => {
     const fecha = new Date(fechaStr);
-    return fecha.toLocaleString('es-PE', { 
-      day: '2-digit', month: '2-digit', year: 'numeric',
-      hour: '2-digit', minute: '2-digit'
+    return fecha.toLocaleString('es-PE', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
     });
   };
 
   return (
-    <div className="space-y-6">
-      {mensaje.texto && (
-        <div className={`p-3 rounded-lg text-xs flex items-center gap-2 ${
-          mensaje.tipo === 'success' 
-            ? 'bg-green-50 border border-green-200 text-green-700' 
-            : 'bg-red-50 border border-red-200 text-red-700'
-        }`}>
-          {mensaje.tipo === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-          <span>{mensaje.texto}</span>
-        </div>
-      )}
+    <div className="space-y-4">
+      <Toast
+        tipo={mensaje.tipo || 'success'}
+        texto={mensaje.texto}
+        onClose={() => setMensaje({ tipo: '', texto: '' })}
+      />
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-800">Pedidos de la Bodega (HU-13, HU-14)</h2>
-        <button 
-          onClick={cargarPedidos} 
+        <h2 className="text-lg font-extrabold text-slate-900">Pedidos de la Bodega</h2>
+        <button
+          type="button"
+          onClick={cargarPedidos}
           disabled={loading}
-          className="flex items-center gap-1 text-sm text-blue-600 hover:text-blue-800"
+          className="flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50"
         >
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Actualizar
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualizar
         </button>
       </div>
 
       {loading ? (
         <div className="flex justify-center py-12">
-          <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+          <Loader2 className="h-8 w-8 animate-spin text-brand-600" />
         </div>
       ) : pedidos.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">
-          <ShoppingBag size={48} className="mx-auto mb-4 text-gray-300" />
-          <p>No hay pedidos registrados aún</p>
+        <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center">
+          <ShoppingBag size={48} className="mx-auto mb-3 text-slate-300" />
+          <p className="text-sm text-slate-500">No hay pedidos registrados aún.</p>
         </div>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-gray-50 border-b">
-              <tr>
-                <th className="p-3 font-medium text-gray-600">ID</th>
-                <th className="p-3 font-medium text-gray-600">Cliente</th>
-                <th className="p-3 font-medium text-gray-600">Teléfono</th>
-                <th className="p-3 font-medium text-gray-600">Dirección</th>
-                <th className="p-3 font-medium text-gray-600">Total</th>
-                <th className="p-3 font-medium text-gray-600">Estado</th>
-                <th className="p-3 font-medium text-gray-600">Fecha</th>
-                <th className="p-3 font-medium text-gray-600">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y">
-              {pedidos.map((pedido) => {
-                const estadoInfo = getEstadoInfo(pedido.estado);
-                const transiciones = getTransicionesValidas(pedido.estado);
-                const esEstadoFinal = pedido.estado === 'ENTREGADO' || pedido.estado === 'CANCELADO';
-                const puedeVerRepartidor = pedido.estado === 'EN_CAMINO' || pedido.estado === 'ENTREGADO';
+        <div className="space-y-3">
+          {pedidos.map((pedido) => {
+            const estadoInfo = getEstadoInfo(pedido.estado);
+            const transiciones = obtenerTransiciones(pedido);
+            const esEstadoFinal = pedido.estado === 'ENTREGADO' || pedido.estado === 'CANCELADO';
+            const puedeVerRepartidor =
+              pedido.metodo_entrega === 'DELIVERY' &&
+              (pedido.estado === 'EN_CAMINO' || pedido.estado === 'ENTREGADO');
 
-                return (
-                  <tr key={pedido.id} className="hover:bg-gray-50">
-                    <td className="p-3 font-mono text-gray-800">#{pedido.id}</td>
-                    <td className="p-3 text-gray-800">{pedido.nombre_cliente}</td>
-                    <td className="p-3 text-gray-600">{pedido.telefono_cliente}</td>
-                    <td className="p-3 text-gray-600 max-w-xs truncate">{pedido.direccion_entrega}</td>
-                    <td className="p-3 font-semibold text-gray-800">S/. {parseFloat(pedido.total).toFixed(2)}</td>
-                    <td className="p-3">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${estadoInfo.color}`}>
-                        {estadoInfo.label}
+            return (
+              <article
+                key={pedido.id}
+                className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 font-mono text-xs font-bold text-brand-700">
+                      #{pedido.id}
+                    </span>
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-900">{pedido.nombre_cliente}</h3>
+                      <p className="flex items-center gap-1 text-[11px] text-slate-500">
+                        <Phone size={11} /> {pedido.telefono_cliente}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${estadoInfo.color}`}>
+                      {estadoInfo.label}
+                    </span>
+                    {!esEstadoFinal ? (
+                      <MenuAcciones
+                        pedido={pedido}
+                        transiciones={transiciones}
+                        puedeVerRepartidor={puedeVerRepartidor}
+                        onCambiarEstado={handleCambiarEstado}
+                        onAbrirMapa={abrirModalRepartidor}
+                      />
+                    ) : (
+                      <span className="text-[11px] font-medium text-slate-400">Finalizado</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-xl bg-slate-50 p-2.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      Dirección
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-700">{pedido.direccion_entrega}</p>
+                    <p className="mt-0.5 text-[10px] text-slate-400">
+                      {pedido.metodo_entrega === 'RECOJO' ? 'Recojo en tienda' : 'Delivery'}
+                      {pedido.distancia_km != null
+                        ? ` · ${Number(pedido.distancia_km).toFixed(1)} km`
+                        : ''}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-slate-50 p-2.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      Total
+                    </p>
+                    <p className="mt-0.5 text-sm font-extrabold text-slate-900">
+                      S/ {parseFloat(pedido.total).toFixed(2)}
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl bg-slate-50 p-2.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      Fecha
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-700">{formatFecha(pedido.created_at)}</p>
+                  </div>
+
+                  <div className="rounded-xl bg-slate-50 p-2.5">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                      Pago
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-700">{pedido.metodo_pago}</p>
+                  </div>
+                </div>
+
+                {pedido.items?.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {pedido.items.map((item, indice) => (
+                      <span
+                        key={`${pedido.id}-${indice}`}
+                        className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-medium text-slate-600"
+                      >
+                        <Package size={10} /> {item.cantidad}x {item.producto}
                       </span>
-                    </td>
-                    <td className="p-3 text-gray-500">{formatFecha(pedido.created_at)}</td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-2">
-                        {!esEstadoFinal && (
-                          <div className="relative">
-                            <button className="text-gray-500 hover:text-gray-700 p-1">
-                              <MoreVertical size={18} />
-                            </button>
-                            <div className="absolute right-0 top-full mt-1 bg-white border rounded-lg shadow-lg py-1 min-w-[140px] z-10">
-                              {transiciones.map(est => (
-                                <button
-                                  key={est}
-                                  onClick={() => handleCambiarEstado(pedido.id, est)}
-                                  className="w-full px-3 py-2 text-left text-xs hover:bg-gray-100"
-                                >
-                                  {ESTADOS.find(e => e.value === est)?.label}
-                                </button>
-                              ))}
-                              {puedeVerRepartidor && (
-                                <button
-                                  onClick={() => abrirModalRepartidor(pedido)}
-                                  className="w-full px-3 py-2 text-left text-xs hover:bg-gray-100 flex items-center gap-2 text-purple-600"
-                                >
-                                  <MapPinIcon size={14} /> Ubicar repartidor
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                        {esEstadoFinal && (
-                          <span className="text-xs text-gray-400">Finalizado</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    ))}
+                  </div>
+                )}
+              </article>
+            );
+          })}
         </div>
       )}
 
-      {/* Modal para ubicar repartidor */}
       {modalRepartidor && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-hidden">
-            <div className="p-4 border-b flex justify-between items-center">
-              <h3 className="font-semibold text-gray-800">Ubicar Repartidor - Pedido #{modalRepartidor.id}</h3>
-              <button onClick={cerrarModalRepartidor} className="text-gray-500 hover:text-gray-700">
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 p-4">
+              <h3 className="font-bold text-slate-900">
+                Ubicar Repartidor - Pedido #{modalRepartidor.id}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setModalRepartidor(null)}
+                className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
+                aria-label="Cerrar"
+              >
+                ×
               </button>
             </div>
             <div className="p-4">
-              <p className="text-sm text-gray-600 mb-4">Haz clic en el mapa para marcar la posición actual del repartidor:</p>
-              <div className="h-64 w-full rounded-lg overflow-hidden border">
+              <p className="mb-3 flex items-center gap-1 text-sm text-slate-600">
+                <Truck size={15} /> Haz clic en el mapa para marcar la posición actual del repartidor.
+              </p>
+              <div className="h-64 w-full overflow-hidden rounded-xl border border-slate-200">
                 <MapContainer center={[repartidorPos.lat, repartidorPos.lng]} zoom={15} className="h-full w-full">
                   <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                  <Marker position={[repartidorPos.lat, repartidorPos.lng]}>
-                    <div className="bg-purple-600 text-white p-2 rounded-full shadow-lg animate-bounce">
-                      🛵
-                    </div>
-                  </Marker>
+                  <MapaRepartidor posicion={repartidorPos} onSelect={setRepartidorPos} />
                 </MapContainer>
               </div>
-              <div className="mt-3 text-xs text-gray-500">
+              <div className="mt-3 text-xs text-slate-500">
                 Lat: {repartidorPos.lat.toFixed(6)}, Lng: {repartidorPos.lng.toFixed(6)}
               </div>
             </div>
-            <div className="p-4 border-t flex justify-end gap-2">
-              <button onClick={cerrarModalRepartidor} className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg">Cancelar</button>
-              <button 
-                onClick={guardarRepartidor} 
-                disabled={guardandoRepartidor}
-                className="px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50"
+            <div className="flex justify-end gap-2 border-t border-slate-100 p-4">
+              <button
+                type="button"
+                onClick={() => setModalRepartidor(null)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
               >
-                {guardandoRepartidor ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Guardar ubicación'}
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={guardarRepartidor}
+                disabled={guardandoRepartidor}
+                className="flex items-center gap-2 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700 disabled:opacity-50"
+              >
+                {guardandoRepartidor && <Loader2 size={14} className="animate-spin" />}
+                Guardar ubicación
               </button>
             </div>
           </div>

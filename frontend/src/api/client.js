@@ -1,22 +1,31 @@
 import axios from 'axios';
 
-const api = axios.create({
-  baseURL: 'http://127.0.0.1:8000/api/',
-});
+const baseURL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api/';
 
-// Endpoints que NO requieren token (públicos)
+const api = axios.create({ baseURL });
+
+export const API_ORIGIN = new URL(baseURL, window.location.origin).origin;
+
+export function mediaUrl(path) {
+  if (!path) return null;
+  return /^https?:\/\//i.test(path) ? path : `${API_ORIGIN}${path}`;
+}
+
+// Endpoints que nunca requieren token (login/registro/refresh)
 const PUBLIC_ENDPOINTS = [
-  '/auth/login/',
-  '/auth/register/bodeguero/',
-  '/auth/refresh/',
+  'auth/login/',
+  'auth/register/bodeguero/',
+  'auth/refresh/',
+  'auth/password-reset/',
 ];
 
-// Adjunta el token JWT automáticamente si existe (excepto en endpoints públicos)
+function esEndpointPublico(url = '') {
+  const normalizada = url.replace(/^\/+/, '');
+  return PUBLIC_ENDPOINTS.some((endpoint) => normalizada.startsWith(endpoint));
+}
+
 api.interceptors.request.use((config) => {
-  const url = config.url || '';
-  const isPublic = PUBLIC_ENDPOINTS.some(endpoint => url.includes(endpoint));
-  
-  if (!isPublic) {
+  if (!esEndpointPublico(config.url)) {
     const token = localStorage.getItem('access_token');
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
@@ -24,5 +33,19 @@ api.interceptors.request.use((config) => {
   }
   return config;
 });
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user_rol');
+      localStorage.removeItem('user_nombre');
+      localStorage.removeItem('user_id');
+    }
+    return Promise.reject(error);
+  }
+);
 
 export default api;

@@ -1,20 +1,63 @@
+import re
 from decimal import Decimal
+
+import cloudinary.uploader
 from django.db import transaction
 from django.db.models import Sum, Count, F
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
-from .models import Usuario, Bodega, Producto, Pedido, DetallePedido
+from .models import Usuario, Bodega, Categoria, Producto, Pedido, DetallePedido
 from .serializers import (
     RegistroUsuarioSerializer,
     BodegaSerializer,
+    CategoriaSerializer,
     ProductoSerializer,
-    BodegaPublicaSerializer,
-    PedidoSerializer,
+    BodegaMapaSerializer,
+    BodegaCatalogoSerializer,
 )
+from .authentication import OptionalJWTAuthentication
+from .permissions import IsBodeguero, IsCliente
+from .utils.geo import haversine_km
+
+TELEFONO_PERU_RE = re.compile(r'^9\d{8}$')
+
+
+def serializar_pedido(pedido):
+    detalles = [
+        {
+            'producto': detalle.producto.nombre,
+            'cantidad': detalle.cantidad,
+            'precio_unitario': float(detalle.precio_unitario),
+            'subtotal': float(detalle.cantidad * detalle.precio_unitario),
+        }
+        for detalle in pedido.detalles.all()
+    ]
+    return {
+        'id': pedido.id,
+        'bodega': {
+            'id': pedido.bodega_id,
+            'nombre': pedido.bodega.nombre_comercial,
+            'direccion': pedido.bodega.direccion,
+        },
+        'cliente_id': pedido.cliente_id,
+        'nombre_cliente': pedido.nombre_cliente,
+        'telefono_cliente': pedido.telefono_cliente,
+        'direccion_entrega': pedido.direccion_entrega,
+        'cliente_lat': float(pedido.cliente_lat) if pedido.cliente_lat is not None else None,
+        'cliente_lng': float(pedido.cliente_lng) if pedido.cliente_lng is not None else None,
+        'total': float(pedido.total),
+        'estado': pedido.estado,
+        'metodo_entrega': pedido.metodo_entrega,
+        'metodo_pago': pedido.metodo_pago,
+        'distancia_km': float(pedido.distancia_km) if pedido.distancia_km is not None else None,
+        'created_at': pedido.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+        'items': detalles,
+    }
 
 # ==========================================
 # SPRINT 1: AUTENTICACIÓN Y GESTIÓN BODEGA
@@ -24,8 +67,10 @@ from .serializers import (
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
+        data['id'] = self.user.id
         data['rol'] = self.user.rol
         data['nombre'] = self.user.first_name
+        data['username'] = self.user.username
         data['email'] = self.user.email
         return data
 
@@ -37,11 +82,12 @@ class RegistroBodegueroView(generics.CreateAPIView):
     queryset = Usuario.objects.all()
     serializer_class = RegistroUsuarioSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
 # HU-03: Registrar y Consultar Perfil de Bodega (GET / POST idempotente)
 class BodegaDetailView(generics.GenericAPIView):
     serializer_class = BodegaSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
 
     def get(self, request, *args, **kwargs):
         bodega = Bodega.objects.filter(usuario=request.user).first()
@@ -53,7 +99,6 @@ class BodegaDetailView(generics.GenericAPIView):
     def post(self, request, *args, **kwargs):
         bodega = Bodega.objects.filter(usuario=request.user).first()
         data = request.data.copy()
-        data['abierto'] = True  # Visibilidad pública garantizada
 
         if bodega:
             serializer = self.get_serializer(bodega, data=data, partial=True)
@@ -61,7 +106,7 @@ class BodegaDetailView(generics.GenericAPIView):
             serializer = self.get_serializer(data=data)
 
         if serializer.is_valid():
-            serializer.save(usuario=request.user, abierto=True)
+            serializer.save(usuario=request.user)
             return Response(
                 serializer.data,
                 status=status.HTTP_200_OK if bodega else status.HTTP_201_CREATED
@@ -72,7 +117,7 @@ class BodegaDetailView(generics.GenericAPIView):
 # HU-04: Listar y Crear Productos de la Bodega Autenticada
 class ProductoListCreateView(generics.ListCreateAPIView):
     serializer_class = ProductoSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
 
     def get_queryset(self):
         return Producto.objects.filter(bodega__usuario=self.request.user)
@@ -80,53 +125,238 @@ class ProductoListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         bodega = Bodega.objects.filter(usuario=self.request.user).first()
         if not bodega:
-            return Response(
-                {"detail": "Primero debes configurar el perfil y ubicación de tu bodega."},
-                status=status.HTTP_400_BAD_REQUEST
+            raise ValidationError(
+                {"detail": "Primero debes configurar el perfil y ubicación de tu bodega."}
             )
         serializer.save(bodega=bodega)
+
+
+# HU-04: Editar y eliminar productos de la propia bodega
+class ProductoDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = ProductoSerializer
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
+
+    def get_queryset(self):
+        return Producto.objects.filter(bodega__usuario=self.request.user)
+
+    def perform_destroy(self, instance):
+        if instance.imagen_public_id:
+            try:
+                cloudinary.uploader.destroy(
+                    instance.imagen_public_id, resource_type='image'
+                )
+            except Exception:
+                pass
+        instance.delete()
+
+
+class CategoriaListCreateView(generics.ListCreateAPIView):
+    serializer_class = CategoriaSerializer
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
+
+    def get_queryset(self):
+        return Categoria.objects.filter(bodega__usuario=self.request.user)
+
+    def perform_create(self, serializer):
+        bodega = Bodega.objects.filter(usuario=self.request.user).first()
+        if not bodega:
+            raise ValidationError(
+                {'detail': 'Primero debes configurar el perfil de tu bodega.'}
+            )
+        serializer.save(bodega=bodega)
+
+
+class CategoriaDetailView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = CategoriaSerializer
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
+
+    def get_queryset(self):
+        return Categoria.objects.filter(bodega__usuario=self.request.user)
+
+    def perform_destroy(self, instance):
+        if instance.productos.exists():
+            raise ValidationError(
+                {'detail': 'No puedes eliminar una categoría que tiene productos.'}
+            )
+        instance.delete()
 
 
 # ==========================================
 # SPRINT 2: VISTA CLIENTE, MAPA Y PEDIDOS
 # ==========================================
 
-# Endpoint público: listar bodegas registradas con catálogo en el mapa
+# Endpoint público: bodegas abiertas dentro del radio de entrega del cliente
 class BodegasPublicasListView(generics.ListAPIView):
-    queryset = Bodega.objects.all()
-    serializer_class = BodegaPublicaSerializer
+    serializer_class = BodegaMapaSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = [OptionalJWTAuthentication]
+
+    def get_queryset(self):
+        bodegas = Bodega.objects.filter(abierto=True).annotate(
+            productos_count=Count('productos')
+        )
+
+        lat = self.request.query_params.get('lat')
+        lng = self.request.query_params.get('lng')
+
+        if lat in (None, '') or lng in (None, ''):
+            return bodegas.order_by('nombre_comercial')
+
+        try:
+            lat_cliente = float(lat)
+            lng_cliente = float(lng)
+        except (TypeError, ValueError):
+            return bodegas.none()
+
+        cercanas = []
+        for bodega in bodegas:
+            distancia = haversine_km(
+                lat_cliente, lng_cliente, bodega.latitud, bodega.longitud
+            )
+            if distancia is not None and distancia <= float(bodega.radio_entrega_km):
+                bodega.distancia_km = distancia
+                cercanas.append(bodega)
+
+        cercanas.sort(key=lambda item: item.distancia_km)
+        return cercanas
+
+
+# Endpoint público: detalle de una tienda con su catálogo
+class BodegaPublicaDetailView(generics.RetrieveAPIView):
+    queryset = Bodega.objects.prefetch_related('productos__categoria', 'categorias').all()
+    serializer_class = BodegaCatalogoSerializer
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = [OptionalJWTAuthentication]
 
 # Endpoint para procesar el pedido del cliente y descontar stock transaccional
 class CrearPedidoView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated, IsCliente]
 
     @transaction.atomic
     def post(self, request):
         data = request.data
         items = data.get('items', [])
-        
-        if not items:
+
+        if not isinstance(items, list) or not items:
             return Response(
                 {'error': 'El carrito no contiene productos.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        bodega_id = data.get('bodega_id')
-        bodega = Bodega.objects.filter(id=bodega_id).first()
+        nombre_cliente = str(data.get('nombre_cliente', '')).strip()
+        if not nombre_cliente:
+            return Response(
+                {'error': 'El nombre del cliente es obligatorio.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        telefono_cliente = str(data.get('telefono_cliente', '')).strip()
+        if not TELEFONO_PERU_RE.match(telefono_cliente):
+            return Response(
+                {'error': 'Ingresa un teléfono válido de 9 dígitos que empiece con 9.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        bodega = Bodega.objects.filter(id=data.get('bodega_id')).first()
         if not bodega:
             return Response(
                 {'error': 'Bodega no encontrada.'},
                 status=status.HTTP_404_NOT_FOUND
             )
 
+        if not bodega.abierto:
+            return Response(
+                {'error': 'La bodega está cerrada en este momento.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        metodo_entrega = data.get('metodo_entrega', 'RECOJO')
+        if metodo_entrega not in dict(Pedido.METODO_ENTREGA_CHOICES):
+            return Response(
+                {'error': 'Método de entrega no válido.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        metodo_pago = data.get('metodo_pago', 'CONTRA_ENTREGA')
+        if metodo_pago not in dict(Pedido.METODO_PAGO_CHOICES):
+            return Response(
+                {'error': 'Método de pago no válido.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        direccion_entrega = str(data.get('direccion_entrega', '')).strip()
+        if metodo_entrega == 'DELIVERY' and not direccion_entrega:
+            return Response(
+                {'error': 'La dirección de entrega es obligatoria para delivery.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        cliente_lat_raw = data.get('cliente_lat')
+        cliente_lng_raw = data.get('cliente_lng')
+        cliente_coords = None
+
+        if cliente_lat_raw not in (None, '') and cliente_lng_raw not in (None, ''):
+            try:
+                cliente_coords = (float(cliente_lat_raw), float(cliente_lng_raw))
+            except (TypeError, ValueError):
+                return Response(
+                    {'error': 'Las coordenadas del cliente no son válidas.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        if metodo_entrega == 'DELIVERY' and not cliente_coords:
+            return Response(
+                {'error': 'Debes indicar la ubicación de entrega en el mapa.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        distancia = None
+        if cliente_coords:
+            distancia = haversine_km(
+                cliente_coords[0], cliente_coords[1], bodega.latitud, bodega.longitud
+            )
+            if distancia is None:
+                return Response(
+                    {'error': 'No se pudo calcular la distancia de entrega.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if distancia > float(bodega.radio_entrega_km):
+                return Response(
+                    {'error': f'La ubicación está fuera del radio de entrega de la bodega ({bodega.radio_entrega_km} km).'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+        # 1. Normalizar y validar cantidades (agrupando productos repetidos)
+        cantidades = {}
+        for item in items:
+            if not isinstance(item, dict):
+                return Response(
+                    {'error': 'Formato de producto no válido.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            producto_id = item.get('id')
+            try:
+                cantidad = int(item.get('cantidad', 1))
+            except (TypeError, ValueError):
+                return Response(
+                    {'error': f"Cantidad inválida para el producto {producto_id}."},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            if cantidad <= 0:
+                return Response(
+                    {'error': 'La cantidad de cada producto debe ser mayor a cero.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            cantidades[producto_id] = cantidades.get(producto_id, 0) + cantidad
+
+        # 2. Validar stock y calcular el total solo con precios de la base de datos
+        productos = {}
         total = Decimal('0.00')
 
-        # 1. Validar existencias de stock
-        for item in items:
-            producto_id = item.get('id')
-            cantidad = int(item.get('cantidad', 1))
-
+        for producto_id, cantidad in cantidades.items():
             prod = Producto.objects.select_for_update().filter(id=producto_id, bodega=bodega).first()
             if not prod:
                 return Response(
@@ -139,28 +369,29 @@ class CrearPedidoView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
+            productos[producto_id] = prod
             total += prod.precio * cantidad
 
-        # 2. Registrar el pedido principal
-        cliente = request.user if request.user.is_authenticated else None
-
+        # 3. Registrar el pedido principal
         pedido = Pedido.objects.create(
             bodega=bodega,
-            cliente=cliente,
-            nombre_cliente=data.get('nombre_cliente', 'Cliente General'),
-            telefono_cliente=data.get('telefono_cliente', ''),
-            direccion_entrega=data.get('direccion_entrega', ''),
+            cliente=request.user,
+            nombre_cliente=nombre_cliente,
+            telefono_cliente=telefono_cliente,
+            direccion_entrega=direccion_entrega,
+            cliente_lat=Decimal(str(cliente_coords[0])) if cliente_coords else None,
+            cliente_lng=Decimal(str(cliente_coords[1])) if cliente_coords else None,
+            distancia_km=Decimal(str(round(distancia, 2))) if distancia is not None else None,
             total=total,
             estado='PENDIENTE',
-            metodo_entrega=data.get('metodo_entrega', 'RECOJO'),
-            metodo_pago=data.get('metodo_pago', 'CONTRA_ENTREGA')
+            metodo_entrega=metodo_entrega,
+            metodo_pago=metodo_pago
         )
 
-        # 3. Guardar detalles del pedido y descontar el inventario
-        for item in items:
-            prod = Producto.objects.get(id=item['id'])
-            cantidad = int(item.get('cantidad', 1))
-            
+        # 4. Guardar detalles del pedido y descontar el inventario
+        for producto_id, cantidad in cantidades.items():
+            prod = productos[producto_id]
+
             DetallePedido.objects.create(
                 pedido=pedido,
                 producto=prod,
@@ -168,13 +399,14 @@ class CrearPedidoView(APIView):
                 precio_unitario=prod.precio
             )
             prod.stock -= cantidad
-            prod.save()
+            prod.save(update_fields=['stock'])
 
         return Response(
             {
                 'mensaje': 'Pedido generado exitosamente.',
                 'pedido_id': pedido.id,
-                'total': float(total)
+                'total': float(total),
+                'distancia_km': round(distancia, 2) if distancia is not None else None,
             },
             status=status.HTTP_201_CREATED
         )
@@ -185,45 +417,70 @@ class CrearPedidoView(APIView):
 
 # HU-13: Listar pedidos de la bodega autenticada
 class BodegaPedidosListView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
 
     def get(self, request):
         bodega = Bodega.objects.filter(usuario=request.user).first()
         if not bodega:
             return Response({'error': 'No tienes una bodega asociada.'}, status=status.HTTP_404_NOT_FOUND)
 
-        pedidos = Pedido.objects.filter(bodega=bodega).order_by('-created_at')
-        data = []
-        for p in pedidos:
-            detalles = [
-                {
-                    'producto': d.producto.nombre,
-                    'cantidad': d.cantidad,
-                    'precio_unitario': float(d.precio_unitario),
-                    'subtotal': float(d.cantidad * d.precio_unitario)
-                }
-                for d in p.detalles.all()
-            ]
-            data.append({
-                'id': p.id,
-                'nombre_cliente': p.nombre_cliente,
-                'telefono_cliente': p.telefono_cliente,
-                'direccion_entrega': p.direccion_entrega,
-                'total': float(p.total),
-                'estado': p.estado,
-                'created_at': p.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                'items': detalles
-            })
-        return Response(data, status=status.HTTP_200_OK)
+        pedidos = (
+            Pedido.objects.filter(bodega=bodega)
+            .select_related('bodega', 'cliente')
+            .prefetch_related('detalles__producto')
+            .order_by('-created_at')
+        )
+        return Response(
+            [serializar_pedido(pedido) for pedido in pedidos],
+            status=status.HTTP_200_OK,
+        )
+
+
+class MisPedidosView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsCliente]
+
+    def get(self, request):
+        pedidos = (
+            Pedido.objects.filter(cliente=request.user)
+            .select_related('bodega')
+            .prefetch_related('detalles__producto')
+            .order_by('-created_at')
+        )
+        return Response(
+            [serializar_pedido(pedido) for pedido in pedidos],
+            status=status.HTTP_200_OK,
+        )
 
 
 # HU-14: Cambiar estado del pedido con reglas de validación
 class CambiarEstadoPedidoView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
 
+    TRANSICIONES_DELIVERY = {
+        'PENDIENTE': ['EN_PREPARACIÓN', 'CANCELADO'],
+        'EN_PREPARACIÓN': ['EN_CAMINO', 'CANCELADO'],
+        'EN_CAMINO': ['ENTREGADO', 'CANCELADO'],
+        'ENTREGADO': [],
+        'CANCELADO': [],
+    }
+
+    TRANSICIONES_RECOJO = {
+        'PENDIENTE': ['EN_PREPARACIÓN', 'CANCELADO'],
+        'EN_PREPARACIÓN': ['LISTO_PARA_RECOGER', 'CANCELADO'],
+        'LISTO_PARA_RECOGER': ['ENTREGADO', 'CANCELADO'],
+        'ENTREGADO': [],
+        'CANCELADO': [],
+    }
+
+    def _transiciones_de(self, pedido):
+        if pedido.metodo_entrega == 'RECOJO':
+            return self.TRANSICIONES_RECOJO
+        return self.TRANSICIONES_DELIVERY
+
+    @transaction.atomic
     def patch(self, request, pk):
         bodega = Bodega.objects.filter(usuario=request.user).first()
-        pedido = Pedido.objects.filter(id=pk, bodega=bodega).first()
+        pedido = Pedido.objects.select_for_update().filter(id=pk, bodega=bodega).first()
         if not pedido:
             return Response({'error': 'Pedido no encontrado o no pertenece a tu bodega.'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -237,8 +494,22 @@ class CambiarEstadoPedidoView(APIView):
         if pedido.estado in ['ENTREGADO', 'CANCELADO']:
             return Response({'error': f'No se puede modificar un pedido que ya está {pedido.estado}.'}, status=status.HTTP_400_BAD_REQUEST)
 
+        transiciones = self._transiciones_de(pedido).get(pedido.estado, [])
+        if nuevo_estado not in transiciones:
+            return Response(
+                {'error': f'Transición no permitida: {pedido.estado} -> {nuevo_estado}.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Al cancelar, devolver las unidades al inventario
+        if nuevo_estado == 'CANCELADO':
+            for detalle in pedido.detalles.all():
+                Producto.objects.filter(id=detalle.producto_id).update(
+                    stock=F('stock') + detalle.cantidad
+                )
+
         pedido.estado = nuevo_estado
-        pedido.save()
+        pedido.save(update_fields=['estado'])
 
         return Response({
             'mensaje': f'Estado del pedido #{pedido.id} actualizado a {nuevo_estado}.',
@@ -247,14 +518,29 @@ class CambiarEstadoPedidoView(APIView):
         }, status=status.HTTP_200_OK)
 
 
-# HU-15: Consultar seguimiento de pedido (público para el cliente con ID)
 class SeguimientoPedidoView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        pedido = Pedido.objects.filter(id=pk).first()
+        pedido = (
+            Pedido.objects.select_related('bodega', 'cliente')
+            .prefetch_related('detalles__producto')
+            .filter(id=pk)
+            .first()
+        )
         if not pedido:
             return Response({'error': 'Pedido no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+
+        es_dueno = pedido.cliente_id == request.user.id
+        es_bodeguero = (
+            pedido.bodega.usuario_id == request.user.id
+            and request.user.rol == 'BODEGUERO'
+        )
+        if not (es_dueno or es_bodeguero):
+            return Response(
+                {'error': 'No tienes permiso para ver este pedido.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         repartidor = None
         if pedido.repartidor_lat and pedido.repartidor_lng:
@@ -273,16 +559,29 @@ class SeguimientoPedidoView(APIView):
                 'longitud': float(pedido.bodega.longitud),
                 'telefono': pedido.bodega.telefono
             },
+            'cliente_lat': float(pedido.cliente_lat) if pedido.cliente_lat is not None else None,
+            'cliente_lng': float(pedido.cliente_lng) if pedido.cliente_lng is not None else None,
             'direccion_entrega': pedido.direccion_entrega,
+            'metodo_entrega': pedido.metodo_entrega,
+            'metodo_pago': pedido.metodo_pago,
+            'distancia_km': float(pedido.distancia_km) if pedido.distancia_km is not None else None,
             'total': float(pedido.total),
             'created_at': pedido.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'items': [
+                {
+                    'producto': detalle.producto.nombre,
+                    'cantidad': detalle.cantidad,
+                    'precio_unitario': float(detalle.precio_unitario),
+                }
+                for detalle in pedido.detalles.all()
+            ],
             'repartidor': repartidor
         }, status=status.HTTP_200_OK)
 
 
 # HU-15 Extra: Actualizar ubicación del repartidor (solo bodeguero)
 class ActualizarRepartidorView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
 
     def patch(self, request, pk):
         bodega = Bodega.objects.filter(usuario=request.user).first()
@@ -312,7 +611,7 @@ class ActualizarRepartidorView(APIView):
 
 # HU-16: Reporte de ventas para el bodeguero (Agregaciones ORM)
 class ReporteVentasView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsBodeguero]
 
     def get(self, request):
         bodega = Bodega.objects.filter(usuario=request.user).first()

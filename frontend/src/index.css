@@ -1,9 +1,48 @@
 @import "tailwindcss";
 @import "leaflet/dist/leaflet.css";
 
+@theme {
+  --color-brand-50: #ecfdf5;
+  --color-brand-100: #d1fae5;
+  --color-brand-200: #a7f3d0;
+  --color-brand-300: #6ee7b7;
+  --color-brand-400: #34d399;
+  --color-brand-500: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-700: #047857;
+  --color-brand-800: #065f46;
+  --color-brand-900: #064e3b;
+
+  --color-accent-50: #fffbeb;
+  --color-accent-100: #fef3c7;
+  --color-accent-200: #fde68a;
+  --color-accent-300: #fcd34d;
+  --color-accent-400: #fbbf24;
+  --color-accent-500: #f59e0b;
+  --color-accent-600: #d97706;
+
+  --color-cream-50: #fffdf7;
+  --color-cream-100: #fdf8ee;
+  --color-cream-200: #f8efd9;
+}
+
+@layer base {
+  body {
+    @apply bg-cream-50 text-slate-800 antialiased;
+  }
+}
+
 /* Asegura que el contenedor de Leaflet se renderice completo */
 .leaflet-container {
   width: 100%;
   height: 100%;
   z-index: 0;
+}
+
+/* Oculta scrollbar en carruseles horizontales */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
