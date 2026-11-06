@@ -21,6 +21,7 @@ const BodegaReportes = lazy(() => import('./pages/BodegaReportes'));
 const SeguimientoPedido = lazy(() => import('./pages/SeguimientoPedido'));
 const MisPedidosPage = lazy(() => import('./pages/MisPedidosPage'));
 const RecuperarPassword = lazy(() => import('./pages/RecuperarPassword'));
+const AyudaPage = lazy(() => import('./pages/AyudaPage'));
 
 function CargandoPagina() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Login />} />
           <Route path="/recuperar-password" element={<RecuperarPassword />} />
+          <Route path="/ayuda" element={<AyudaPage />} />
           <Route path="/mapa" element={<MapaCliente />} />
           <Route path="/tienda/:id" element={<TiendaPage />} />
           <Route

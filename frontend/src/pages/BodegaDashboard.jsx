@@ -20,7 +20,7 @@ import CatalogoProductos from '../components/CatalogoProductos';
 import ConfirmDialog from '../components/ConfirmDialog';
 import ProductoModal from '../components/ProductoModal';
 import Toast from '../components/Toast';
-import { cerrarSesion } from '../utils/auth';
+import { useAuth } from '../hooks/useAuth';
 import '../utils/fixLeafletIcon';
 
 const LIMA_COORDS = [-12.046374, -77.042793];
@@ -43,6 +43,8 @@ const tabs = [
 
 export default function BodegaDashboard() {
   const [tieneBodega, setTieneBodega] = useState(false);
+  const [verificando, setVerificando] = useState(true);
+  const { cerrarSesion } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -62,6 +64,8 @@ export default function BodegaDashboard() {
       setTieneBodega(!!(res.data && res.data.nombre_comercial));
     } catch {
       setTieneBodega(false);
+    } finally {
+      setVerificando(false);
     }
   };
 
@@ -69,10 +73,18 @@ export default function BodegaDashboard() {
     verificarBodega();
   }, []);
 
-  const handleCerrarSesion = () => {
-    cerrarSesion();
+  const handleCerrarSesion = async () => {
+    await cerrarSesion();
     navigate('/');
   };
+
+  if (verificando) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-cream-50">
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-brand-200 border-t-brand-600" />
+      </div>
+    );
+  }
 
   if (!tieneBodega && activeTab !== 'perfil') {
     return <Navigate to="/bodega/dashboard" replace />;

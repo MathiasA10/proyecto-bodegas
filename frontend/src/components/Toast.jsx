@@ -1,13 +1,24 @@
+import { useEffect } from 'react';
 import { AlertCircle, CheckCircle2, X } from 'lucide-react';
 
 export default function Toast({ tipo = 'success', texto, onClose }) {
+  useEffect(() => {
+    if (!texto || !onClose) return undefined;
+    const temporizador = setTimeout(onClose, 5000);
+    return () => clearTimeout(temporizador);
+  }, [texto, onClose]);
+
   if (!texto) return null;
 
   const esExito = tipo === 'success';
   const Icono = esExito ? CheckCircle2 : AlertCircle;
 
   return (
-    <div className="fixed right-4 top-4 z-[1200] w-[calc(100%-2rem)] max-w-sm">
+    <div
+      role={esExito ? 'status' : 'alert'}
+      aria-live={esExito ? 'polite' : 'assertive'}
+      className="fixed right-4 top-4 z-[1200] w-[calc(100%-2rem)] max-w-sm"
+    >
       <div
         className={`flex items-start gap-2 rounded-xl border px-4 py-3 text-sm shadow-lg ${
           esExito

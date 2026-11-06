@@ -23,7 +23,7 @@ class Usuario(AbstractUser):
 
 class Bodega(models.Model):
     # HU-03: Perfil comercial y geolocalización
-    usuario = models.OneToOneField(Usuario, on_delete=models.CASCADE, related_name='bodega')
+    usuario = models.OneToOneField(Usuario, on_delete=models.PROTECT, related_name='bodega')
     nombre_comercial = models.CharField(max_length=150)
     direccion = models.CharField(max_length=255)
     latitud = models.DecimalField(max_digits=10, decimal_places=8)
@@ -108,8 +108,8 @@ class Pedido(models.Model):
         ('PLIN', 'Plin'),
         ('CONTRA_ENTREGA', 'Contra entrega'),
     )
-    bodega = models.ForeignKey(Bodega, on_delete=models.CASCADE, related_name='pedidos')
-    cliente = models.ForeignKey(Usuario, on_delete=models.CASCADE, related_name='pedidos_cliente', null=True, blank=True)
+    bodega = models.ForeignKey(Bodega, on_delete=models.PROTECT, related_name='pedidos')
+    cliente = models.ForeignKey(Usuario, on_delete=models.SET_NULL, related_name='pedidos_cliente', null=True, blank=True)
     nombre_cliente = models.CharField(max_length=150)
     telefono_cliente = models.CharField(max_length=15)
     direccion_entrega = models.CharField(max_length=255)
@@ -122,19 +122,36 @@ class Pedido(models.Model):
     metodo_pago = models.CharField(max_length=15, choices=METODO_PAGO_CHOICES, default='CONTRA_ENTREGA')
     repartidor_lat = models.DecimalField(max_digits=10, decimal_places=8, null=True, blank=True)
     repartidor_lng = models.DecimalField(max_digits=11, decimal_places=8, null=True, blank=True)
+    idempotency_key = models.CharField(max_length=64, blank=True, null=True)
+    idempotency_hash = models.CharField(max_length=64, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['cliente', 'idempotency_key'],
+                condition=models.Q(idempotency_key__isnull=False),
+                name='pedido_idempotencia_unica_por_cliente',
+            )
+        ]
 
     def __str__(self):
         return f"Pedido #{self.id} - {self.nombre_cliente} (S/. {self.total})"
 
 class DetallePedido(models.Model):
     pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, related_name='detalles')
-    producto = models.ForeignKey(Producto, on_delete=models.CASCADE)
+    producto = models.ForeignKey(
+        Producto, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    producto_nombre = models.CharField(max_length=150, blank=True, null=True)
     cantidad = models.PositiveIntegerField(default=1)
     precio_unitario = models.DecimalField(max_digits=8, decimal_places=2)
 
     def __str__(self):
-        return f"{self.cantidad}x {self.producto.nombre}"
+        nombre = self.producto_nombre or (
+            self.producto.nombre if self.producto else 'Producto eliminado'
+        )
+        return f"{self.cantidad}x {nombre}"
 
 
 class PasswordResetOTP(models.Model):

@@ -23,6 +23,15 @@ export default function ProductoModal({
   onGuardado,
   onCategoriaCreada,
 }) {
+  useEffect(() => {
+    if (!abierto) return undefined;
+    function manejarTecla(evento) {
+      if (evento.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', manejarTecla);
+    return () => window.removeEventListener('keydown', manejarTecla);
+  }, [abierto, onClose]);
+
   const [form, setForm] = useState({
     nombre: '',
     descripcion: '',
@@ -141,9 +150,14 @@ export default function ProductoModal({
 
   return (
     <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/50 p-4">
-      <div className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="producto-modal-titulo"
+        className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-xl"
+      >
         <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
-          <h2 className="text-base font-bold text-slate-900">
+          <h2 id="producto-modal-titulo" className="text-base font-bold text-slate-900">
             {producto ? 'Editar producto' : 'Agregar producto'}
           </h2>
           <button
@@ -158,8 +172,9 @@ export default function ProductoModal({
 
         <form onSubmit={guardar} className="space-y-3 p-5">
           <div>
-            <label className="text-xs font-semibold text-slate-600">Nombre</label>
+            <label htmlFor="producto-nombre" className="text-xs font-semibold text-slate-600">Nombre</label>
             <input
+              id="producto-nombre"
               name="nombre"
               value={form.nombre}
               onChange={cambiar}
@@ -169,10 +184,11 @@ export default function ProductoModal({
           </div>
 
           <div>
-            <label className="text-xs font-semibold text-slate-600">
+            <label htmlFor="producto-descripcion" className="text-xs font-semibold text-slate-600">
               Descripción
             </label>
             <textarea
+              id="producto-descripcion"
               name="descripcion"
               value={form.descripcion}
               onChange={cambiar}
@@ -183,10 +199,11 @@ export default function ProductoModal({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-semibold text-slate-600">
+              <label htmlFor="producto-precio" className="text-xs font-semibold text-slate-600">
                 Precio (S/)
               </label>
               <input
+                id="producto-precio"
                 name="precio"
                 type="number"
                 min="0.01"
@@ -198,8 +215,9 @@ export default function ProductoModal({
               />
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-600">Stock</label>
+              <label htmlFor="producto-stock" className="text-xs font-semibold text-slate-600">Stock</label>
               <input
+                id="producto-stock"
                 name="stock"
                 type="number"
                 min="0"
@@ -214,7 +232,7 @@ export default function ProductoModal({
 
           <div>
             <div className="flex items-center justify-between">
-              <label className="text-xs font-semibold text-slate-600">
+              <label htmlFor="producto-categoria" className="text-xs font-semibold text-slate-600">
                 Categoría
               </label>
               <button
@@ -226,6 +244,7 @@ export default function ProductoModal({
               </button>
             </div>
             <select
+              id="producto-categoria"
               name="categoria"
               value={form.categoria}
               onChange={cambiar}

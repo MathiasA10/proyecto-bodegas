@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
@@ -12,7 +12,8 @@ import {
 } from 'lucide-react';
 
 import api from '../api/client';
-import { cerrarSesion, getNombre } from '../utils/auth';
+import { useAuth } from '../hooks/useAuth';
+import { formatearMetodoPago } from '../utils/formatos';
 
 const ESTADOS = {
   PENDIENTE: { label: 'Pendiente', color: 'bg-accent-100 text-accent-600' },
@@ -35,30 +36,47 @@ function formatoFecha(fecha) {
 
 export default function MisPedidosPage() {
   const navigate = useNavigate();
+  const { usuario, cerrarSesion } = useAuth();
   const [pedidos, setPedidos] = useState([]);
+  const [siguiente, setSiguiente] = useState(null);
   const [cargando, setCargando] = useState(true);
+  const [cargandoMas, setCargandoMas] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    let activo = true;
-    api
-      .get('cliente/pedidos/')
-      .then((res) => {
-        if (activo) setPedidos(res.data);
-      })
-      .catch(() => {
-        if (activo) setError('No pudimos cargar tus pedidos.');
-      })
-      .finally(() => {
-        if (activo) setCargando(false);
-      });
-    return () => {
-      activo = false;
-    };
+  const cargarPedidos = useCallback(async () => {
+    setCargando(true);
+    setError('');
+    try {
+      const res = await api.get('cliente/pedidos/');
+      setPedidos(res.data.results ?? res.data);
+      setSiguiente(res.data.next ?? null);
+    } catch {
+      setError('No pudimos cargar tus pedidos.');
+    } finally {
+      setCargando(false);
+    }
   }, []);
 
-  const salir = () => {
-    cerrarSesion();
+  useEffect(() => {
+    cargarPedidos();
+  }, [cargarPedidos]);
+
+  const cargarMas = async () => {
+    if (!siguiente || cargandoMas) return;
+    setCargandoMas(true);
+    try {
+      const res = await api.get(siguiente);
+      setPedidos((previos) => [...previos, ...(res.data.results ?? [])]);
+      setSiguiente(res.data.next ?? null);
+    } catch {
+      setError('No pudimos cargar más pedidos.');
+    } finally {
+      setCargandoMas(false);
+    }
+  };
+
+  const salir = async () => {
+    await cerrarSesion();
     navigate('/');
   };
 
@@ -70,6 +88,7 @@ export default function MisPedidosPage() {
             <button
               type="button"
               onClick={() => navigate('/mapa')}
+              aria-label="Volver al mapa"
               className="rounded-xl p-2 text-slate-500 transition hover:bg-slate-100 hover:text-brand-700"
             >
               <ArrowLeft size={18} />
@@ -80,7 +99,7 @@ export default function MisPedidosPage() {
             <div>
               <h1 className="text-sm font-extrabold text-slate-900">Mis pedidos</h1>
               <p className="text-[11px] text-slate-500">
-                {getNombre() ? `Hola, ${getNombre()}` : 'Historial de compras'}
+                {usuario?.nombre ? `Hola, ${usuario.nombre}` : 'Historial de compras'}
               </p>
             </div>
           </div>
@@ -101,7 +120,14 @@ export default function MisPedidosPage() {
           </div>
         ) : error ? (
           <div className="rounded-2xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
-            {error}
+            <p>{error}</p>
+            <button
+              type="button"
+              onClick={cargarPedidos}
+              className="mt-3 rounded-xl border border-red-300 bg-white px-4 py-2 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+            >
+              Reintentar
+            </button>
           </div>
         ) : pedidos.length === 0 ? (
           <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-16 text-center">
@@ -160,9 +186,7 @@ export default function MisPedidosPage() {
                     </span>
                     <span className="flex items-center gap-1">
                       <Clock size={12} />
-                      {pedido.metodo_pago === 'CONTRA_ENTREGA'
-                        ? 'Contra entrega'
-                        : pedido.metodo_pago}
+                      {formatearMetodoPago(pedido.metodo_pago)}
                     </span>
                     <span className="flex items-center gap-1 font-semibold text-slate-700">
                       <Package size={12} />
@@ -185,6 +209,19 @@ export default function MisPedidosPage() {
                 </article>
               );
             })}
+          </div>
+        )}
+
+        {siguiente && (
+          <div className="flex justify-center pt-2">
+            <button
+              type="button"
+              onClick={cargarMas}
+              disabled={cargandoMas}
+              className="rounded-xl border border-brand-200 bg-white px-4 py-2 text-sm font-semibold text-brand-700 transition hover:bg-brand-50 disabled:opacity-60"
+            >
+              {cargandoMas ? 'Cargando...' : 'Cargar más'}
+            </button>
           </div>
         )}
       </main>

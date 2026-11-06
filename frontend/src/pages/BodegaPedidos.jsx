@@ -13,7 +13,9 @@ import {
 } from 'lucide-react';
 
 import api from '../api/client';
+import ConfirmDialog from '../components/ConfirmDialog';
 import Toast from '../components/Toast';
+import { formatearMetodoPago } from '../utils/formatos';
 import '../utils/fixLeafletIcon';
 
 const ESTADOS = [
@@ -153,17 +155,22 @@ function MenuAcciones({ pedido, transiciones, puedeVerRepartidor, onCambiarEstad
 
 export default function BodegaPedidos() {
   const [pedidos, setPedidos] = useState([]);
+  const [siguiente, setSiguiente] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [cargandoMas, setCargandoMas] = useState(false);
   const [mensaje, setMensaje] = useState({ tipo: '', texto: '' });
   const [modalRepartidor, setModalRepartidor] = useState(null);
   const [repartidorPos, setRepartidorPos] = useState({ lat: -12.046374, lng: -77.042793 });
   const [guardandoRepartidor, setGuardandoRepartidor] = useState(false);
+  const [confirmacion, setConfirmacion] = useState(null);
+  const [procesandoEstado, setProcesandoEstado] = useState(false);
 
   const cargarPedidos = async () => {
     setLoading(true);
     try {
       const res = await api.get('bodega/pedidos/');
-      setPedidos(res.data);
+      setPedidos(res.data.results ?? res.data);
+      setSiguiente(res.data.next ?? null);
     } catch {
       setMensaje({ tipo: 'error', texto: 'Error al cargar los pedidos.' });
     } finally {
@@ -171,22 +178,48 @@ export default function BodegaPedidos() {
     }
   };
 
+  const cargarMas = async () => {
+    if (!siguiente || cargandoMas) return;
+    setCargandoMas(true);
+    try {
+      const res = await api.get(siguiente);
+      setPedidos((previos) => [...previos, ...(res.data.results ?? [])]);
+      setSiguiente(res.data.next ?? null);
+    } catch {
+      setMensaje({ tipo: 'error', texto: 'Error al cargar más pedidos.' });
+    } finally {
+      setCargandoMas(false);
+    }
+  };
+
   useEffect(() => {
     cargarPedidos();
   }, []);
 
-  const handleCambiarEstado = async (pedidoId, nuevoEstado) => {
+  const ejecutarCambio = async (pedidoId, nuevoEstado) => {
+    setProcesandoEstado(true);
     try {
       await api.patch(`bodega/pedidos/${pedidoId}/estado/`, { estado: nuevoEstado });
       const etiqueta = getEstadoInfo(nuevoEstado).label;
       setMensaje({ tipo: 'success', texto: `Estado actualizado a "${etiqueta}".` });
+      setConfirmacion(null);
       cargarPedidos();
     } catch (err) {
       setMensaje({
         tipo: 'error',
         texto: err.response?.data?.error || 'Error al cambiar estado.',
       });
+    } finally {
+      setProcesandoEstado(false);
     }
+  };
+
+  const handleCambiarEstado = (pedidoId, nuevoEstado) => {
+    if (nuevoEstado === 'CANCELADO' || nuevoEstado === 'ENTREGADO') {
+      setConfirmacion({ pedidoId, estado: nuevoEstado });
+      return;
+    }
+    ejecutarCambio(pedidoId, nuevoEstado);
   };
 
   const abrirModalRepartidor = (pedido) => {
@@ -341,7 +374,9 @@ export default function BodegaPedidos() {
                     <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
                       Pago
                     </p>
-                    <p className="mt-0.5 text-xs text-slate-700">{pedido.metodo_pago}</p>
+                    <p className="mt-0.5 text-xs text-slate-700">
+                      {formatearMetodoPago(pedido.metodo_pago)}
+                    </p>
                   </div>
                 </div>
 
@@ -362,6 +397,39 @@ export default function BodegaPedidos() {
           })}
         </div>
       )}
+
+      {siguiente && (
+        <div className="flex justify-center pt-2">
+          <button
+            type="button"
+            onClick={cargarMas}
+            disabled={cargandoMas}
+            className="rounded-xl border border-brand-200 bg-white px-4 py-2 text-sm font-semibold text-brand-700 transition hover:bg-brand-50 disabled:opacity-60"
+          >
+            {cargandoMas ? 'Cargando...' : 'Cargar más'}
+          </button>
+        </div>
+      )}
+
+      <ConfirmDialog
+        abierto={Boolean(confirmacion)}
+        titulo={
+          confirmacion?.estado === 'CANCELADO'
+            ? 'Cancelar pedido'
+            : 'Marcar como entregado'
+        }
+        mensaje={
+          confirmacion?.estado === 'CANCELADO'
+            ? 'Esta acción es irreversible y devolverá el stock al inventario.'
+            : 'Esta acción es irreversible. ¿Confirmas que el pedido fue entregado?'
+        }
+        confirmarTexto="Confirmar"
+        cargando={procesandoEstado}
+        onConfirmar={() =>
+          ejecutarCambio(confirmacion.pedidoId, confirmacion.estado)
+        }
+        onCancelar={() => setConfirmacion(null)}
+      />
 
       {modalRepartidor && (
         <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-900/50 p-4">

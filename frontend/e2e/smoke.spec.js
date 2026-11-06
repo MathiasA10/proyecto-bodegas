@@ -26,7 +26,7 @@ test('abre la recuperación de contraseña', async ({ page }) => {
 test('muestra el mapa público de bodegas', async ({ page }) => {
   await page.goto('/mapa');
 
-  await expect(page.getByText('Bodegas Cercanas')).toBeVisible();
+  await expect(page.locator('.leaflet-container').first()).toBeVisible();
 });
 
 test('abre el catálogo de una bodega pública', async ({ page, request }) => {

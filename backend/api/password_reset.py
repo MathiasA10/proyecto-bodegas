@@ -4,13 +4,19 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.password_validation import validate_password
 from django.core import signing
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
+from rest_framework_simplejwt.token_blacklist.models import (
+    BlacklistedToken,
+    OutstandingToken,
+)
 
 from .models import PasswordResetOTP, Usuario
 
@@ -150,9 +156,9 @@ class ConfirmarPasswordResetView(APIView):
 
         if not token:
             return _respuesta_codigo_invalido()
-        if len(password) < 6:
+        if len(password) < 8:
             return Response(
-                {'error': 'La contraseña debe tener al menos 6 caracteres.'},
+                {'error': 'La contraseña debe tener al menos 8 caracteres.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -165,9 +171,20 @@ class ConfirmarPasswordResetView(APIView):
         if not usuario:
             return _respuesta_codigo_invalido()
 
+        try:
+            validate_password(password, usuario)
+        except DjangoValidationError as exc:
+            return Response(
+                {'error': ' '.join(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         usuario.set_password(password)
         usuario.save(update_fields=['password'])
         PasswordResetOTP.objects.filter(usuario=usuario, usado=False).update(usado=True)
+
+        for token in OutstandingToken.objects.filter(user=usuario):
+            BlacklistedToken.objects.get_or_create(token=token)
 
         return Response(
             {'mensaje': 'Contraseña actualizada correctamente.'},

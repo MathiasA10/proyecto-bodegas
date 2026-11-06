@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Circle,
@@ -28,9 +28,11 @@ import {
 
 import api from '../api/client';
 import CatalogoProductos from '../components/CatalogoProductos';
+import ConfirmDialog from '../components/ConfirmDialog';
+import Toast from '../components/Toast';
+import { useAuth } from '../hooks/useAuth';
 import { useCart } from '../hooks/useCart';
 import { useGeolocation } from '../hooks/useGeolocation';
-import { estaAutenticado, getNombre, getRol } from '../utils/auth';
 import { calcularDistanciaKm, formatearDistancia } from '../utils/geo';
 import { esTelefonoValido, normalizarTelefono } from '../utils/validators';
 import '../utils/fixLeafletIcon';
@@ -94,6 +96,7 @@ function formatoPrecio(valor) {
 export default function TiendaPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { usuario } = useAuth();
   const cart = useCart();
 
   const [tienda, setTienda] = useState(null);
@@ -104,7 +107,7 @@ export default function TiendaPage() {
   const [metodoEntrega, setMetodoEntrega] = useState('RECOJO');
   const [metodoPago, setMetodoPago] = useState('CONTRA_ENTREGA');
   const [cliente, setCliente] = useState({
-    nombre: getNombre(),
+    nombre: usuario?.nombre || '',
     telefono: '',
     direccion: '',
     referencia: '',
@@ -112,6 +115,9 @@ export default function TiendaPage() {
   const [ubicacionEntrega, setUbicacionEntrega] = useState(null);
   const [enviando, setEnviando] = useState(false);
   const [pedidoCreado, setPedidoCreado] = useState(null);
+  const [productoPendiente, setProductoPendiente] = useState(null);
+  const [aviso, setAviso] = useState('');
+  const idempotencyKeyRef = useRef(null);
 
   const { coords, error: geoError, loading: geoLoading, solicitar } =
     useGeolocation();
@@ -194,11 +200,29 @@ export default function TiendaPage() {
 
   const paso4Valido =
     cliente.nombre.trim() !== '' && esTelefonoValido(cliente.telefono);
-  const puedeConfirmar = estaAutenticado() && getRol() === 'CLIENTE';
+  const puedeConfirmar = Boolean(usuario) && usuario.rol === 'CLIENTE';
 
   const agregarProducto = (producto) => {
     if (!tienda?.abierto) return;
+    const esOtraBodega =
+      cart.bodega &&
+      Number(cart.bodega.id) !== Number(tienda.id) &&
+      cart.items.length > 0;
+
+    if (esOtraBodega) {
+      setProductoPendiente(producto);
+      return;
+    }
     cart.agregar(tienda, producto);
+    setAviso('Producto agregado al carrito.');
+  };
+
+  const confirmarCambioBodega = () => {
+    if (!productoPendiente) return;
+    cart.vaciar();
+    cart.agregar(tienda, productoPendiente);
+    setProductoPendiente(null);
+    setAviso('Carrito actualizado con la nueva bodega.');
   };
 
   const continuar = () => {
@@ -210,6 +234,12 @@ export default function TiendaPage() {
   const retroceder = () => {
     if (paso > 1) setPaso((actual) => actual - 1);
   };
+
+  useEffect(() => {
+    if (paso === 4) {
+      idempotencyKeyRef.current = crypto.randomUUID();
+    }
+  }, [paso]);
 
   const confirmarPedido = async () => {
     if (!tienda || itemsCarrito.length === 0 || !paso4Valido) return;
@@ -248,7 +278,12 @@ export default function TiendaPage() {
         })),
       };
 
-      const res = await api.post('public/pedidos/crear/', payload);
+      const idempotencyKey =
+        idempotencyKeyRef.current || crypto.randomUUID();
+      idempotencyKeyRef.current = idempotencyKey;
+      const res = await api.post('public/pedidos/crear/', payload, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+      });
 
       setPedidoCreado({
         id: res.data.pedido_id,
@@ -256,9 +291,10 @@ export default function TiendaPage() {
         distancia: res.data.distancia_km,
       });
       cart.vaciar();
+      idempotencyKeyRef.current = null;
       setPaso(1);
       setCliente({
-        nombre: getNombre(),
+        nombre: usuario?.nombre || '',
         telefono: '',
         direccion: '',
         referencia: '',
@@ -760,8 +796,8 @@ export default function TiendaPage() {
                   <h2 className="mb-1 text-sm font-bold text-slate-800">
                     Método de pago
                   </h2>
-                  <p className="mb-3 text-[10px] text-slate-400">
-                    Pago simulado para esta demostración
+                  <p className="mb-3 text-[10px] text-slate-500">
+                    Pago de demostración. No realices pagos reales.
                   </p>
 
                   <div className="space-y-2.5">
@@ -842,13 +878,20 @@ export default function TiendaPage() {
                   </h2>
 
                   <div className="space-y-2 rounded-xl bg-cream-100 p-3 text-[11px]">
-                    <div className="flex justify-between">
-                      <span className="text-slate-500">Productos</span>
-                      <span className="font-semibold text-slate-800">
-                        {cantidadCarrito}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
+                    <p className="font-bold text-slate-700">Productos</p>
+                    <ul className="space-y-1">
+                      {itemsCarrito.map((item) => (
+                        <li key={item.id} className="flex justify-between gap-2">
+                          <span className="text-slate-600">
+                            {item.cantidad} x {item.nombre}
+                          </span>
+                          <span className="font-semibold text-slate-800">
+                            S/ {formatoPrecio(item.precio * item.cantidad)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex justify-between border-t border-slate-200 pt-2">
                       <span className="text-slate-500">Entrega</span>
                       <span className="font-semibold text-slate-800">
                         {metodoEntrega === 'RECOJO'
@@ -903,7 +946,7 @@ export default function TiendaPage() {
                   {!puedeConfirmar ? (
                     <div className="mt-3 rounded-xl border border-accent-200 bg-accent-50 p-3 text-[11px] text-accent-600">
                       <p className="font-semibold">
-                        {estaAutenticado()
+                        {usuario
                           ? 'Esta cuenta es de bodeguero. Ingresa con una cuenta de cliente para comprar.'
                           : 'Inicia sesión para confirmar tu pedido y hacer seguimiento.'}
                       </p>
@@ -992,6 +1035,18 @@ export default function TiendaPage() {
           </div>
         </aside>
       </main>
+
+      <Toast tipo="success" texto={aviso} onClose={() => setAviso('')} />
+
+      <ConfirmDialog
+        abierto={Boolean(productoPendiente)}
+        titulo="Reemplazar carrito"
+        mensaje="Tu carrito tiene productos de otra bodega. Se vaciará para agregar este producto."
+        confirmarTexto="Reemplazar"
+        peligro={false}
+        onConfirmar={confirmarCambioBodega}
+        onCancelar={() => setProductoPendiente(null)}
+      />
     </div>
   );
 }

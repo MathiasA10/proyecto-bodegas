@@ -51,6 +51,13 @@ export default function BodegaReportes() {
       <div className="py-12 text-center text-slate-500">
         <BarChart2 size={48} className="mx-auto mb-4 text-slate-300" />
         <p className="text-sm">No se pudo cargar el reporte.</p>
+        <button
+          type="button"
+          onClick={cargarReporte}
+          className="mt-4 rounded-xl bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-brand-700"
+        >
+          Reintentar
+        </button>
       </div>
     );
   }

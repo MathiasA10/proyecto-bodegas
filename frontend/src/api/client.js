@@ -1,8 +1,12 @@
 import axios from 'axios';
 
-const baseURL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api/';
+const baseURL = import.meta.env.VITE_API_URL || '/api/';
 
-const api = axios.create({ baseURL });
+let accessToken = null;
+let refreshPromise = null;
+
+const refreshApi = axios.create({ baseURL, withCredentials: true });
+const api = axios.create({ baseURL, withCredentials: true });
 
 export const API_ORIGIN = new URL(baseURL, window.location.origin).origin;
 
@@ -11,11 +15,20 @@ export function mediaUrl(path) {
   return /^https?:\/\//i.test(path) ? path : `${API_ORIGIN}${path}`;
 }
 
-// Endpoints que nunca requieren token (login/registro/refresh)
+export function setAccessToken(token) {
+  accessToken = token;
+}
+
+export function getAccessToken() {
+  return accessToken;
+}
+
+// Endpoints que nunca requieren token (login/registro/refresh/recuperación)
 const PUBLIC_ENDPOINTS = [
   'auth/login/',
   'auth/register/bodeguero/',
   'auth/refresh/',
+  'auth/logout/',
   'auth/password-reset/',
 ];
 
@@ -24,26 +37,56 @@ function esEndpointPublico(url = '') {
   return PUBLIC_ENDPOINTS.some((endpoint) => normalizada.startsWith(endpoint));
 }
 
+async function renovarAccessToken() {
+  if (!refreshPromise) {
+    refreshPromise = refreshApi
+      .post('auth/refresh/')
+      .then((res) => {
+        setAccessToken(res.data.access);
+        return res.data.access;
+      })
+      .catch((error) => {
+        setAccessToken(null);
+        window.dispatchEvent(new Event('auth:logout'));
+        throw error;
+      })
+      .finally(() => {
+        refreshPromise = null;
+      });
+  }
+  return refreshPromise;
+}
+
 api.interceptors.request.use((config) => {
-  if (!esEndpointPublico(config.url)) {
-    const token = localStorage.getItem('access_token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
+  if (!esEndpointPublico(config.url) && accessToken) {
+    config.headers.Authorization = `Bearer ${accessToken}`;
   }
   return config;
 });
 
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      localStorage.removeItem('access_token');
-      localStorage.removeItem('refresh_token');
-      localStorage.removeItem('user_rol');
-      localStorage.removeItem('user_nombre');
-      localStorage.removeItem('user_id');
+  async (error) => {
+    const original = error.config;
+    const status = error.response?.status;
+
+    if (
+      status === 401 &&
+      original &&
+      !original._retry &&
+      !esEndpointPublico(original.url)
+    ) {
+      original._retry = true;
+      try {
+        const token = await renovarAccessToken();
+        original.headers = original.headers || {};
+        original.headers.Authorization = `Bearer ${token}`;
+        return api(original);
+      } catch {
+        return Promise.reject(error);
+      }
     }
+
     return Promise.reject(error);
   }
 );

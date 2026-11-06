@@ -1,8 +1,12 @@
+import hashlib
+import json
+import logging
+import math
 import re
 from decimal import Decimal
 
 import cloudinary.uploader
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Sum, Count, F
 from rest_framework import generics, permissions, status
 from rest_framework.exceptions import ValidationError
@@ -22,16 +26,23 @@ from .serializers import (
     BodegaCatalogoSerializer,
 )
 from .authentication import OptionalJWTAuthentication
+from .auth_cookies import set_refresh_cookie
+from .pagination import StandardResultsSetPagination
 from .permissions import IsBodeguero, IsCliente
 from .utils.geo import haversine_km
 
 TELEFONO_PERU_RE = re.compile(r'^9\d{8}$')
+logger = logging.getLogger(__name__)
 
 
 def serializar_pedido(pedido):
     detalles = [
         {
-            'producto': detalle.producto.nombre,
+            'producto': detalle.producto_nombre or (
+                detalle.producto.nombre
+                if detalle.producto
+                else 'Producto eliminado'
+            ),
             'cantidad': detalle.cantidad,
             'precio_unitario': float(detalle.precio_unitario),
             'subtotal': float(detalle.cantidad * detalle.precio_unitario),
@@ -79,6 +90,13 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'login'
+
+    def post(self, request, *args, **kwargs):
+        response = super().post(request, *args, **kwargs)
+        refresh = response.data.pop('refresh', None)
+        if refresh:
+            set_refresh_cookie(response, refresh)
+        return response
 
 # HU-01: Registro Bodeguero
 class RegistroBodegueroView(generics.CreateAPIView):
@@ -151,7 +169,10 @@ class ProductoDetailView(generics.RetrieveUpdateDestroyAPIView):
                     instance.imagen_public_id, resource_type='image'
                 )
             except Exception:
-                pass
+                logger.exception(
+                    'No se pudo eliminar la imagen %s de Cloudinary.',
+                    instance.imagen_public_id,
+                )
         instance.delete()
 
 
@@ -242,6 +263,44 @@ class CrearPedidoView(APIView):
     @transaction.atomic
     def post(self, request):
         data = request.data
+        idempotency_key = str(
+            request.headers.get('Idempotency-Key')
+            or data.get('idempotency_key')
+            or ''
+        ).strip() or None
+        if idempotency_key and len(idempotency_key) > 64:
+            return Response(
+                {'error': 'La clave de idempotencia es demasiado larga.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        idempotency_hash = hashlib.sha256(
+            json.dumps(data, sort_keys=True, default=str).encode('utf-8')
+        ).hexdigest()
+
+        if idempotency_key:
+            existente = Pedido.objects.filter(
+                cliente=request.user,
+                idempotency_key=idempotency_key,
+            ).first()
+            if existente:
+                if existente.idempotency_hash != idempotency_hash:
+                    return Response(
+                        {'error': 'La clave de idempotencia ya fue usada con otro pedido.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                return Response(
+                    {
+                        'mensaje': 'Pedido ya procesado.',
+                        'pedido_id': existente.id,
+                        'total': float(existente.total),
+                        'distancia_km': float(existente.distancia_km)
+                        if existente.distancia_km is not None
+                        else None,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
         items = data.get('items', [])
 
         if not isinstance(items, list) or not items:
@@ -249,11 +308,21 @@ class CrearPedidoView(APIView):
                 {'error': 'El carrito no contiene productos.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        if len(items) > 50:
+            return Response(
+                {'error': 'El pedido supera el máximo de 50 líneas.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         nombre_cliente = str(data.get('nombre_cliente', '')).strip()
         if not nombre_cliente:
             return Response(
                 {'error': 'El nombre del cliente es obligatorio.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if len(nombre_cliente) > 150:
+            return Response(
+                {'error': 'El nombre del cliente es demasiado largo.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -264,7 +333,15 @@ class CrearPedidoView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        bodega = Bodega.objects.filter(id=data.get('bodega_id')).first()
+        try:
+            bodega_id = int(data.get('bodega_id'))
+        except (TypeError, ValueError):
+            return Response(
+                {'error': 'La bodega indicada no es válida.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        bodega = Bodega.objects.filter(id=bodega_id).first()
         if not bodega:
             return Response(
                 {'error': 'Bodega no encontrada.'},
@@ -277,14 +354,14 @@ class CrearPedidoView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        metodo_entrega = data.get('metodo_entrega', 'RECOJO')
+        metodo_entrega = str(data.get('metodo_entrega', 'RECOJO')).strip()
         if metodo_entrega not in dict(Pedido.METODO_ENTREGA_CHOICES):
             return Response(
                 {'error': 'Método de entrega no válido.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        metodo_pago = data.get('metodo_pago', 'CONTRA_ENTREGA')
+        metodo_pago = str(data.get('metodo_pago', 'CONTRA_ENTREGA')).strip()
         if metodo_pago not in dict(Pedido.METODO_PAGO_CHOICES):
             return Response(
                 {'error': 'Método de pago no válido.'},
@@ -292,6 +369,11 @@ class CrearPedidoView(APIView):
             )
 
         direccion_entrega = str(data.get('direccion_entrega', '')).strip()
+        if len(direccion_entrega) > 255:
+            return Response(
+                {'error': 'La dirección de entrega es demasiado larga.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         if metodo_entrega == 'DELIVERY' and not direccion_entrega:
             return Response(
                 {'error': 'La dirección de entrega es obligatoria para delivery.'},
@@ -302,14 +384,27 @@ class CrearPedidoView(APIView):
         cliente_lng_raw = data.get('cliente_lng')
         cliente_coords = None
 
-        if cliente_lat_raw not in (None, '') and cliente_lng_raw not in (None, ''):
+        if cliente_lat_raw not in (None, '') or cliente_lng_raw not in (None, ''):
             try:
-                cliente_coords = (float(cliente_lat_raw), float(cliente_lng_raw))
+                latitud_cliente = float(cliente_lat_raw)
+                longitud_cliente = float(cliente_lng_raw)
             except (TypeError, ValueError):
                 return Response(
                     {'error': 'Las coordenadas del cliente no son válidas.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            if not (
+                math.isfinite(latitud_cliente)
+                and math.isfinite(longitud_cliente)
+                and -90 <= latitud_cliente <= 90
+                and -180 <= longitud_cliente <= 180
+            ):
+                return Response(
+                    {'error': 'Las coordenadas del cliente están fuera de rango.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            cliente_coords = (latitud_cliente, longitud_cliente)
 
         if metodo_entrega == 'DELIVERY' and not cliente_coords:
             return Response(
@@ -318,7 +413,7 @@ class CrearPedidoView(APIView):
             )
 
         distancia = None
-        if cliente_coords:
+        if metodo_entrega == 'DELIVERY':
             distancia = haversine_km(
                 cliente_coords[0], cliente_coords[1], bodega.latitud, bodega.longitud
             )
@@ -342,18 +437,18 @@ class CrearPedidoView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            producto_id = item.get('id')
             try:
+                producto_id = int(item.get('id'))
                 cantidad = int(item.get('cantidad', 1))
             except (TypeError, ValueError):
                 return Response(
-                    {'error': f"Cantidad inválida para el producto {producto_id}."},
+                    {'error': 'El producto o la cantidad no son válidos.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            if cantidad <= 0:
+            if cantidad <= 0 or cantidad > 1000:
                 return Response(
-                    {'error': 'La cantidad de cada producto debe ser mayor a cero.'},
+                    {'error': 'La cantidad de cada producto debe estar entre 1 y 1000.'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
@@ -363,8 +458,16 @@ class CrearPedidoView(APIView):
         productos = {}
         total = Decimal('0.00')
 
+        productos_qs = (
+            Producto.objects.select_for_update()
+            .filter(id__in=sorted(cantidades), bodega=bodega)
+            .order_by('id')
+        )
+        for prod in productos_qs:
+            productos[prod.id] = prod
+
         for producto_id, cantidad in cantidades.items():
-            prod = Producto.objects.select_for_update().filter(id=producto_id, bodega=bodega).first()
+            prod = productos.get(producto_id)
             if not prod:
                 return Response(
                     {'error': f"Producto con ID {producto_id} no pertenece a esta bodega o no existe."},
@@ -376,24 +479,46 @@ class CrearPedidoView(APIView):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            productos[producto_id] = prod
             total += prod.precio * cantidad
 
         # 3. Registrar el pedido principal
-        pedido = Pedido.objects.create(
-            bodega=bodega,
-            cliente=request.user,
-            nombre_cliente=nombre_cliente,
-            telefono_cliente=telefono_cliente,
-            direccion_entrega=direccion_entrega,
-            cliente_lat=Decimal(str(cliente_coords[0])) if cliente_coords else None,
-            cliente_lng=Decimal(str(cliente_coords[1])) if cliente_coords else None,
-            distancia_km=Decimal(str(round(distancia, 2))) if distancia is not None else None,
-            total=total,
-            estado='PENDIENTE',
-            metodo_entrega=metodo_entrega,
-            metodo_pago=metodo_pago
-        )
+        try:
+            with transaction.atomic():
+                pedido = Pedido.objects.create(
+                    bodega=bodega,
+                    cliente=request.user,
+                    nombre_cliente=nombre_cliente,
+                    telefono_cliente=telefono_cliente,
+                    direccion_entrega=direccion_entrega,
+                    cliente_lat=Decimal(str(cliente_coords[0])) if cliente_coords else None,
+                    cliente_lng=Decimal(str(cliente_coords[1])) if cliente_coords else None,
+                    distancia_km=Decimal(str(round(distancia, 2))) if distancia is not None else None,
+                    total=total,
+                    estado='PENDIENTE',
+                    metodo_entrega=metodo_entrega,
+                    metodo_pago=metodo_pago,
+                    idempotency_key=idempotency_key,
+                    idempotency_hash=idempotency_hash,
+                )
+        except IntegrityError:
+            if idempotency_key:
+                existente = Pedido.objects.filter(
+                    cliente=request.user,
+                    idempotency_key=idempotency_key,
+                ).first()
+                if existente and existente.idempotency_hash == idempotency_hash:
+                    return Response(
+                        {
+                            'mensaje': 'Pedido ya procesado.',
+                            'pedido_id': existente.id,
+                            'total': float(existente.total),
+                            'distancia_km': float(existente.distancia_km)
+                            if existente.distancia_km is not None
+                            else None,
+                        },
+                        status=status.HTTP_200_OK,
+                    )
+            raise
 
         # 4. Guardar detalles del pedido y descontar el inventario
         for producto_id, cantidad in cantidades.items():
@@ -402,6 +527,7 @@ class CrearPedidoView(APIView):
             DetallePedido.objects.create(
                 pedido=pedido,
                 producto=prod,
+                producto_nombre=prod.nombre,
                 cantidad=cantidad,
                 precio_unitario=prod.precio
             )
@@ -437,10 +563,10 @@ class BodegaPedidosListView(APIView):
             .prefetch_related('detalles__producto')
             .order_by('-created_at')
         )
-        return Response(
-            [serializar_pedido(pedido) for pedido in pedidos],
-            status=status.HTTP_200_OK,
-        )
+        paginador = StandardResultsSetPagination()
+        pagina = paginador.paginate_queryset(pedidos, request)
+        serializados = [serializar_pedido(pedido) for pedido in pagina]
+        return paginador.get_paginated_response(serializados)
 
 
 class MisPedidosView(APIView):
@@ -453,10 +579,10 @@ class MisPedidosView(APIView):
             .prefetch_related('detalles__producto')
             .order_by('-created_at')
         )
-        return Response(
-            [serializar_pedido(pedido) for pedido in pedidos],
-            status=status.HTTP_200_OK,
-        )
+        paginador = StandardResultsSetPagination()
+        pagina = paginador.paginate_queryset(pedidos, request)
+        serializados = [serializar_pedido(pedido) for pedido in pagina]
+        return paginador.get_paginated_response(serializados)
 
 
 # HU-14: Cambiar estado del pedido con reglas de validación
@@ -576,7 +702,11 @@ class SeguimientoPedidoView(APIView):
             'created_at': pedido.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             'items': [
                 {
-                    'producto': detalle.producto.nombre,
+                    'producto': detalle.producto_nombre or (
+                        detalle.producto.nombre
+                        if detalle.producto
+                        else 'Producto eliminado'
+                    ),
                     'cantidad': detalle.cantidad,
                     'precio_unitario': float(detalle.precio_unitario),
                 }
@@ -633,7 +763,7 @@ class ReporteVentasView(APIView):
         # Top productos más vendidos
         top_productos = (
             DetallePedido.objects.filter(pedido__bodega=bodega, pedido__estado='ENTREGADO')
-            .values('producto__nombre')
+            .values('producto_nombre')
             .annotate(unidades_vendidas=Sum('cantidad'), total_generado=Sum(F('cantidad') * F('precio_unitario')))
             .order_by('-unidades_vendidas')[:5]
         )

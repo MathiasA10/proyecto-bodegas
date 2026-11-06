@@ -16,7 +16,22 @@ Backend (desde `backend/`):
 .\venv\Scripts\python.exe manage.py check
 .\venv\Scripts\python.exe manage.py makemigrations --check --dry-run
 .\venv\Scripts\python.exe manage.py test api --settings=core.test_settings
+.\venv\Scripts\python.exe manage.py test api --settings=core.test_settings_pg --timing --durations 10
 .\venv\Scripts\python.exe manage.py seed_productos_demo --email mathicrack999@gmail.com
+.\venv\Scripts\python.exe manage.py seed_e2e --settings=core.e2e_settings
+```
+
+Cobertura:
+
+```powershell
+.\venv\Scripts\python.exe -m coverage run --source=api,core manage.py test api --settings=core.test_settings_pg
+.\venv\Scripts\python.exe -m coverage report -m
+```
+
+Pruebas de carga (Locust), con el backend corriendo:
+
+```powershell
+.\venv\Scripts\python.exe -m locust -f locustfile.py --host http://127.0.0.1:8000
 ```
 
 Frontend (desde `frontend/`):
@@ -50,15 +65,21 @@ El frontend apunta por defecto a `http://127.0.0.1:8000/api/`; el backend debe c
 ## Entorno y precauciones
 
 - La base de datos es PostgreSQL remota compartida, configurada en `backend/.env` mediante `DATABASE_URL`.
+- PostgreSQL 16 local instalado como servicio `postgresql-x64-16` en `127.0.0.1:5432`.
+- Pruebas con PostgreSQL: base `bodegas_test`, usuario `bodegas_test`, contraseña `bodegas_test`; configuración en `core/test_settings_pg.py`.
+- Pruebas E2E aisladas: base `bodegas_e2e`, configuración en `core/e2e_settings.py`; cuentas creadas por `seed_e2e`.
 - No ejecutar migraciones ni comandos destructivos sin confirmación del usuario.
 - La migración `api/0006` ya está aplicada.
 - La migración `api/0007` (categorías por bodega, imagen Cloudinary y OTP) ya está aplicada en la BD remota.
 - La migración `api/0008` (estado `LISTO_PARA_RECOGER` y conversión de pedidos de recojo) ya está aplicada en la BD remota.
+- Las migraciones `api/0009`, `0010` y `0011` (idempotencia, cascadas seguras y snapshot de producto) ya están aplicadas en la BD remota.
 - Imágenes de productos: `CLOUDINARY_URL` en `backend/.env`; la subida se hace desde el backend con `cloudinary.uploader`.
 - Recuperación de contraseña por OTP de 6 dígitos: en producción se envía con Brevo HTTP API mediante `BREVO_API_KEY` y `DEFAULT_FROM_EMAIL`; sin esa clave usa consola en desarrollo.
 - `core/test_settings.py` usa SQLite en memoria, email locmem y throttles altos para tests; no toca la BD remota.
+- `core/test_settings_pg.py` y `core/e2e_settings.py` usan PostgreSQL local y no tocan la BD remota.
 - Rate limiting con DRF: límites globales anónimo/usuario y scopes para login, registro, OTP y creación de pedidos.
-- En desarrollo local el cache de throttling es `LocMemCache` por proceso; con varios workers los límites no se comparten.
+- En desarrollo local el cache de throttling es `LocMemCache`; en producción usa `DatabaseCache` compartido entre workers.
+- Autenticación: access token en memoria y refresh token en cookie `HttpOnly`; logout y blacklist con SimpleJWT.
 - No commitear cambios sin pedido explícito.
 
 ## Datos demo
@@ -74,8 +95,9 @@ El frontend apunta por defecto a `http://127.0.0.1:8000/api/`; el backend debe c
 - `Categoria`: pertenece a una bodega; nombre único por bodega; al crear una bodega se generan `Abarrotes`, `Bebidas`, `Limpieza`, `Snacks`, `Otros`; el bodeguero puede crear/eliminar las suyas.
 - `Producto`: pertenece a una bodega y a una categoría de esa misma bodega; imagen opcional subida a Cloudinary (`imagen`, `imagen_public_id`).
 - `PasswordResetOTP`: código de 6 dígitos hasheado, vence en 10 minutos, máximo 5 intentos y 3 solicitudes cada 15 minutos.
-- `Pedido`: métodos `RECOJO`/`DELIVERY`, pagos `YAPE`/`PLIN`/`CONTRA_ENTREGA`; guarda `cliente`, coordenadas del cliente y `distancia_km`.
-- `DetallePedido`: guarda precio unitario histórico.
+- `Pedido`: métodos `RECOJO`/`DELIVERY`, pagos `YAPE`/`PLIN`/`CONTRA_ENTREGA`; guarda `cliente`, coordenadas del cliente, `distancia_km` y claves de idempotencia.
+- `DetallePedido`: guarda precio unitario y snapshot de `producto_nombre`; el producto puede quedar nulo sin perder el historial.
+- `Bodega.usuario` y `Pedido.bodega` usan `PROTECT`; `Pedido.cliente` y `DetallePedido.producto` usan `SET_NULL`.
 
 Reglas clave:
 
@@ -119,7 +141,8 @@ Reglas clave:
 
 - `src/App.jsx`: rutas con `React.lazy` + `Suspense` para code-splitting; Login queda eager.
 - `playwright.config.js` y `e2e/`: pruebas E2E; usan `E2E_BASE_URL` y `E2E_API_URL`. El login del vendedor se prueba si existen `E2E_SELLER_EMAIL` y `E2E_SELLER_PASSWORD`.
-- `src/api/client.js`: Axios, token automático salvo login/registro/refresh/recuperación, limpieza de sesión en 401.
+- `src/context/AuthContext.jsx` + `src/hooks/useAuth.js`: sesión reactiva, access token en memoria y restauración mediante refresh cookie.
+- `src/api/client.js`: Axios con `withCredentials`, refresh automático ante 401 y renovación de sesión.
 - `src/context/CartContext.jsx` + `src/hooks/useCart.js`: carrito global persistido en `localStorage` (`bodega_cart_v1`); un solo carrito y una sola bodega a la vez.
 - `src/hooks/useGeolocation.js`: ubicación del cliente.
 - `src/utils/geo.js`: Haversine en frontend y formateo de distancias.
@@ -150,17 +173,28 @@ Convenciones:
 - Despliegue en Render y OTP real con Brevo: verificados.
 - Code-splitting con `React.lazy` + `Suspense`: implementado; el bundle inicial bajó de ~562 kB a ~301 kB y las páginas pesadas se cargan por separado.
 - Rate limiting por scopes en login, registro, OTP y creación de pedidos: implementado y probado.
-- Pruebas E2E con Playwright: 4 aprobadas; el login del vendedor se omite si no se configuran `E2E_SELLER_EMAIL` y `E2E_SELLER_PASSWORD`.
+- Pruebas E2E con Playwright: 12 aprobadas (escritorio y móvil) usando `core.e2e_settings` y `seed_e2e`; incluye checkout de recojo.
 - Migraciones `0006`, `0007` y `0008` aplicadas en la BD compartida.
-- Datos E2E eliminados; no deben quedar usuarios, bodegas, productos ni pedidos con prefijo `E2E`.
-- Tests backend: 33 aprobados.
+- Migraciones `0009`, `0010` y `0011` aplicadas en la BD compartida.
+- Tests backend: 45 aprobados.
+- Cobertura backend: 81%.
 - `npm run lint` y `npm run build` aprobados.
+- `pip-audit`: sin vulnerabilidades conocidas en dependencias backend.
+- `npm audit`: solo quedan vulnerabilidades moderadas de desarrollo en ESLint/minimatch.
+- `check --deploy`: sin advertencias.
+- Hardening aplicado: fail-closed, password validators, JWT corto con rotación/blacklist, cookies HttpOnly, HSTS/HTTPS, health check y cache compartido.
+- Validación de pedidos: coordenadas finitas, límites de payload, bloqueo ordenado e idempotencia.
+- Paginación en listados de pedidos con botón “Cargar más” en el frontend.
+- UX/Accesibilidad: labels asociados, toasts accesibles con autocierre, diálogos con Escape y `aria-modal`, foco visible, `lang="es"`, `prefers-reduced-motion` y verificación responsive en móvil.
+- Estados de error con botón “Reintentar” en historial y reportes; polling de seguimiento se detiene en estados finales.
+- Feedback al agregar al carrito, confirmación al reemplazar carrito y resumen de ítems en el checkout.
+- Centro de ayuda (`/ayuda`) y aviso explícito de pago de demostración.
+- Validación de imágenes Cloudinary (5 MB, JPG/PNG/WebP) con compensación ante fallos.
+- Prueba de carga con Locust y chequeos de headers/CORS; pruebas de IDOR.
 - Advertencia no bloqueante de Vite: rutas de imágenes de Leaflet sin resolver en build.
-- Advertencia no bloqueante de `check --deploy`: faltan `SECURE_HSTS_SECONDS` y `SECURE_SSL_REDIRECT`; Render ya fuerza HTTPS en el borde.
 
 ## Pendientes sugeridos
 
 - Subir imágenes a los productos demo de Bodega Math.
-- Configurar credenciales E2E del vendedor para ejecutar también el login autenticado.
-- Mover el cache de throttling a un backend compartido si se escala a varios workers.
-- Otros pendientes: revisar accesibilidad y ampliar la cobertura E2E.
+- Auditoría con ZAP (requiere entorno con Docker/ZAP) y revisión con lector de pantalla.
+- Completar hallazgos UX de Nielsen de menor prioridad (contraste de textos pequeños, unificación total de formato de precios, atajos de teclado).

@@ -17,7 +17,8 @@ import {
 } from 'lucide-react';
 
 import api from '../api/client';
-import { getRol } from '../utils/auth';
+import { useAuth } from '../hooks/useAuth';
+import { formatearMetodoPago } from '../utils/formatos';
 import '../utils/fixLeafletIcon';
 
 const LIMA_CENTRO = [-12.046374, -77.042793];
@@ -33,7 +34,7 @@ const PASOS_RECOJO = [
   { estado: 'PENDIENTE', etiqueta: 'Pedido recibido', icono: Clock },
   { estado: 'EN_PREPARACIÓN', etiqueta: 'En preparación', icono: Package },
   { estado: 'LISTO_PARA_RECOGER', etiqueta: 'Listo para recoger', icono: Store },
-  { estado: 'ENTREGADO', etiqueta: 'Entregado', icono: CheckCircle2 },
+  { estado: 'ENTREGADO', etiqueta: 'Recogido', icono: CheckCircle2 },
 ];
 
 function obtenerPasos(pedido) {
@@ -61,6 +62,7 @@ function formatFecha(fechaStr) {
 export default function SeguimientoPedido() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { usuario } = useAuth();
   const [pedido, setPedido] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -93,15 +95,22 @@ export default function SeguimientoPedido() {
   useEffect(() => {
     activoRef.current = true;
     cargarPedido();
-    const intervalo = setInterval(cargarPedido, 5000);
+
+    if (pedido?.estado === 'ENTREGADO' || pedido?.estado === 'CANCELADO') {
+      return undefined;
+    }
+
+    const intervalo = setInterval(() => {
+      if (!document.hidden) cargarPedido();
+    }, 5000);
     return () => {
       activoRef.current = false;
       clearInterval(intervalo);
     };
-  }, [cargarPedido]);
+  }, [cargarPedido, pedido?.estado]);
 
   const volver = () => {
-    navigate(getRol() === 'BODEGUERO' ? '/bodega/dashboard/pedidos' : '/mis-pedidos');
+    navigate(usuario?.rol === 'BODEGUERO' ? '/bodega/dashboard/pedidos' : '/mis-pedidos');
   };
 
   if (loading && !pedido) {
@@ -308,9 +317,7 @@ export default function SeguimientoPedido() {
                   Pago
                 </p>
                 <p className="mt-1 text-xs font-semibold text-slate-700">
-                  {pedido.metodo_pago === 'CONTRA_ENTREGA'
-                    ? 'Contra entrega'
-                    : pedido.metodo_pago}
+                  {formatearMetodoPago(pedido.metodo_pago)}
                 </p>
               </div>
               <div className="rounded-xl bg-slate-50 p-3">

@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api/client';
+import { useAuth } from '../hooks/useAuth';
 import { Store, Lock, Mail, User, UserPlus, Eye, EyeOff, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export default function Login() {
+  const { iniciarSesion } = useAuth();
   const [mode, setMode] = useState('login');
   const [role, setRole] = useState('CLIENTE');
   const [showPassword, setShowPassword] = useState(false);
@@ -33,20 +35,21 @@ export default function Login() {
     setExito('');
     setLoading(true);
     try {
-      const res = await api.post('auth/login/', { email, password });
-      localStorage.setItem('access_token', res.data.access);
-      localStorage.setItem('refresh_token', res.data.refresh);
-      localStorage.setItem('user_rol', res.data.rol);
-      localStorage.setItem('user_nombre', res.data.nombre);
-      localStorage.setItem('user_id', res.data.id);
+      const data = await iniciarSesion({ email, password });
 
-      if (res.data.rol === 'BODEGUERO') {
+      if (data.rol === 'BODEGUERO') {
         navigate('/bodega/dashboard');
       } else {
         navigate(location.state?.from || '/mapa');
       }
-    } catch {
-      setError('Correo o contraseña incorrectos');
+    } catch (err) {
+      if (err.response?.status === 429) {
+        setError('Demasiados intentos. Espera un momento e inténtalo de nuevo.');
+      } else if (err.response?.status === 401) {
+        setError('Correo o contraseña incorrectos');
+      } else {
+        setError('No se pudo conectar con el servidor. Intenta nuevamente.');
+      }
     } finally {
       setLoading(false);
     }
@@ -60,8 +63,8 @@ export default function Login() {
       setError('Las contraseñas no coinciden');
       return;
     }
-    if (regForm.password.length < 6) {
-      setError('La contraseña debe tener al menos 6 caracteres');
+    if (regForm.password.length < 8) {
+      setError('La contraseña debe tener al menos 8 caracteres');
       return;
     }
     setLoading(true);
@@ -166,11 +169,12 @@ export default function Login() {
         {mode === 'login' ? (
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="text-xs font-semibold text-slate-600">Correo Electrónico</label>
+              <label htmlFor="login-email" className="text-xs font-semibold text-slate-600">Correo Electrónico</label>
               <div className="flex items-center border border-slate-200 rounded-xl px-3 py-2 mt-1 focus-within:border-brand-500">
                 <Mail size={18} className="text-slate-400 mr-2" />
                 <input
-                  type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
+                  id="login-email"
+                  type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)}
                   placeholder="ejemplo@correo.com" className="w-full outline-none text-sm"
                 />
               </div>
@@ -178,7 +182,7 @@ export default function Login() {
 
             <div>
               <div className="flex items-center justify-between">
-                <label className="text-xs font-semibold text-slate-600">Contraseña</label>
+                <label htmlFor="login-password" className="text-xs font-semibold text-slate-600">Contraseña</label>
                 <button
                   type="button"
                   onClick={() => navigate('/recuperar-password')}
@@ -190,12 +194,15 @@ export default function Login() {
               <div className="flex items-center border border-slate-200 rounded-xl px-3 py-2 mt-1 relative focus-within:border-brand-500">
                 <Lock size={18} className="text-slate-400 mr-2" />
                 <input
-                  type={showPassword ? 'text' : 'password'} required value={password} onChange={(e) => setPassword(e.target.value)}
+                  id="login-password"
+                  type={showPassword ? 'text' : 'password'} autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••" className="w-full outline-none text-sm pr-8"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                  aria-pressed={showPassword}
                   className="absolute right-3 text-slate-400 hover:text-slate-600"
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
@@ -210,9 +217,10 @@ export default function Login() {
         ) : (
           <form onSubmit={handleRegister} className="space-y-3">
             <div>
-              <label className="text-xs text-slate-600 font-medium">Nombre de usuario</label>
+              <label htmlFor="reg-username" className="text-xs text-slate-600 font-medium">Nombre de usuario</label>
               <input
-                name="username" required onChange={handleRegChange}
+                id="reg-username"
+                name="username" autoComplete="username" required onChange={handleRegChange}
                 value={regForm.username}
                 placeholder="usuario123" className="w-full border border-slate-200 p-2 rounded-xl text-sm outline-none mt-1 focus:border-brand-500"
               />
@@ -220,17 +228,19 @@ export default function Login() {
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="text-xs text-slate-600 font-medium">Nombres</label>
+                <label htmlFor="reg-first-name" className="text-xs text-slate-600 font-medium">Nombres</label>
                 <input
-                  name="first_name" required onChange={handleRegChange}
+                  id="reg-first-name"
+                  name="first_name" autoComplete="given-name" required onChange={handleRegChange}
                   value={regForm.first_name}
                   placeholder="Juan" className="w-full border border-slate-200 p-2 rounded-xl text-sm outline-none mt-1 focus:border-brand-500"
                 />
               </div>
               <div>
-                <label className="text-xs text-slate-600 font-medium">Apellidos</label>
+                <label htmlFor="reg-last-name" className="text-xs text-slate-600 font-medium">Apellidos</label>
                 <input
-                  name="last_name" required onChange={handleRegChange}
+                  id="reg-last-name"
+                  name="last_name" autoComplete="family-name" required onChange={handleRegChange}
                   value={regForm.last_name}
                   placeholder="Pérez" className="w-full border border-slate-200 p-2 rounded-xl text-sm outline-none mt-1 focus:border-brand-500"
                 />
@@ -238,8 +248,9 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="text-xs text-slate-600 font-medium">DNI (opcional)</label>
+              <label htmlFor="reg-dni" className="text-xs text-slate-600 font-medium">DNI (opcional)</label>
               <input
+                id="reg-dni"
                 name="dni" maxLength="8" onChange={handleRegChange}
                 value={regForm.dni || ''}
                 placeholder="12345678" className="w-full border border-slate-200 p-2 rounded-xl text-sm outline-none mt-1 focus:border-brand-500"
@@ -247,26 +258,29 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="text-xs text-slate-600 font-medium">Correo Electrónico</label>
+              <label htmlFor="reg-email" className="text-xs text-slate-600 font-medium">Correo Electrónico</label>
               <input
-                name="email" type="email" required onChange={handleRegChange}
+                id="reg-email"
+                name="email" type="email" autoComplete="email" required onChange={handleRegChange}
                 value={regForm.email}
                 placeholder="correo@ejemplo.com" className="w-full border border-slate-200 p-2 rounded-xl text-sm outline-none mt-1 focus:border-brand-500"
               />
             </div>
 
             <div>
-              <label className="text-xs text-slate-600 font-medium">Contraseña</label>
+              <label htmlFor="reg-password" className="text-xs text-slate-600 font-medium">Contraseña</label>
               <div className="flex items-center border border-slate-200 rounded-xl px-3 py-2 mt-1 relative focus-within:border-brand-500">
                 <Lock size={18} className="text-slate-400 mr-2" />
                 <input
-                  name="password" type={showPassword ? 'text' : 'password'} required onChange={handleRegChange}
+                  id="reg-password"
+                  name="password" type={showPassword ? 'text' : 'password'} autoComplete="new-password" required onChange={handleRegChange}
                   value={regForm.password}
                   placeholder="••••••••" className="w-full outline-none text-sm pr-8"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
                   className="absolute right-3 text-slate-400 hover:text-slate-600"
                 >
                   {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
@@ -275,9 +289,10 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="text-xs text-slate-600 font-medium">Confirmar Contraseña</label>
+              <label htmlFor="reg-confirm-password" className="text-xs text-slate-600 font-medium">Confirmar Contraseña</label>
               <input
-                name="confirmPassword" type={showPassword ? 'text' : 'password'} required onChange={handleRegChange}
+                id="reg-confirm-password"
+                name="confirmPassword" type={showPassword ? 'text' : 'password'} autoComplete="new-password" required onChange={handleRegChange}
                 value={regForm.confirmPassword}
                 placeholder="••••••••" className="w-full border border-slate-200 p-2 rounded-xl text-sm outline-none mt-1 focus:border-brand-500"
               />
@@ -301,6 +316,14 @@ export default function Login() {
             {mode === 'login' ? 'Crear cuenta' : 'Iniciar sesión'}
           </button>
         </p>
+
+        <button
+          type="button"
+          onClick={() => navigate('/ayuda')}
+          className="mt-2 block w-full text-center text-xs font-medium text-slate-400 transition hover:text-brand-700"
+        >
+          Centro de ayuda
+        </button>
       </div>
     </div>
   );

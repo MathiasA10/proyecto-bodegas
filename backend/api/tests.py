@@ -1,13 +1,23 @@
+import base64
 from unittest.mock import patch
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.cache import cache
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 from rest_framework.throttling import ScopedRateThrottle
 
-from .models import Bodega, Categoria, PasswordResetOTP, Producto
+from .models import (
+    Bodega,
+    Categoria,
+    DetallePedido,
+    PasswordResetOTP,
+    Pedido,
+    Producto,
+)
 from .utils.geo import haversine_km
 
 User = get_user_model()
@@ -98,6 +108,59 @@ class ThrottleTests(BaseApiTestCase):
             self.assertEqual(res.status_code, 429)
 
 
+class CookieAuthTests(BaseApiTestCase):
+    def login(self):
+        return self.client.post(
+            '/api/auth/login/',
+            {'email': self.user.email, 'password': 'secret123'},
+            format='json',
+        )
+
+    def test_login_guarda_refresh_en_cookie_httponly(self):
+        cache.clear()
+        res = self.login()
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIn('access', res.data)
+        self.assertNotIn('refresh', res.data)
+
+        cookie = res.cookies[settings.AUTH_REFRESH_COOKIE_NAME]
+        self.assertTrue(cookie['httponly'])
+        self.assertEqual(cookie['path'], settings.AUTH_REFRESH_COOKIE_PATH)
+        self.assertEqual(cookie['samesite'], 'Lax')
+
+    def test_refresh_rota_la_cookie(self):
+        cache.clear()
+        login = self.login()
+        refresh_original = login.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+
+        res = self.client.post('/api/auth/refresh/', {}, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertIn('access', res.data)
+        refresh_nuevo = res.cookies[
+            settings.AUTH_REFRESH_COOKIE_NAME
+        ].value
+        self.assertNotEqual(refresh_original, refresh_nuevo)
+
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_original
+        res = self.client.post('/api/auth/refresh/', {}, format='json')
+        self.assertEqual(res.status_code, 401)
+
+    def test_logout_elimina_cookie_y_revoca_refresh(self):
+        cache.clear()
+        login = self.login()
+        refresh = login.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value
+
+        res = self.client.post('/api/auth/logout/', {}, format='json')
+        self.assertEqual(res.status_code, 204)
+
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh
+        res = self.client.post('/api/auth/refresh/', {}, format='json')
+        self.assertEqual(res.status_code, 401)
+
+
 class BodegasPublicasTests(BaseApiTestCase):
     def test_mapa_incluye_bodega_dentro_del_radio(self):
         res = self.client.get(
@@ -179,6 +242,203 @@ class CrearPedidoTests(BaseApiTestCase):
     def test_stock_insuficiente_es_rechazado(self):
         res = self.crear_pedido(items=[{'id': self.producto.id, 'cantidad': 99}])
         self.assertEqual(res.status_code, 400)
+
+    def test_recojo_ignora_el_radio_de_entrega(self):
+        res = self.crear_pedido(
+            metodo_entrega='RECOJO',
+            cliente_lat=-12.500000,
+            cliente_lng=-77.500000,
+            direccion_entrega='',
+        )
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertIsNone(res.data['distancia_km'])
+
+    def test_idempotency_key_evita_pedido_duplicado(self):
+        self.client.force_authenticate(user=self.cliente)
+        payload = {
+            'bodega_id': self.bodega.id,
+            'nombre_cliente': 'Cliente Test',
+            'telefono_cliente': '999999999',
+            'direccion_entrega': 'Calle Falsa 123',
+            'metodo_entrega': 'DELIVERY',
+            'metodo_pago': 'CONTRA_ENTREGA',
+            'cliente_lat': -12.046374,
+            'cliente_lng': -77.042793,
+            'items': [{'id': self.producto.id, 'cantidad': 2}],
+        }
+
+        primera = self.client.post(
+            '/api/public/pedidos/crear/',
+            payload,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='checkout-1',
+        )
+        segunda = self.client.post(
+            '/api/public/pedidos/crear/',
+            payload,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='checkout-1',
+        )
+
+        self.assertEqual(primera.status_code, 201, primera.data)
+        self.assertEqual(segunda.status_code, 200, segunda.data)
+        self.assertEqual(primera.data['pedido_id'], segunda.data['pedido_id'])
+
+        self.producto.refresh_from_db()
+        self.assertEqual(self.producto.stock, 8)
+
+        payload['items'][0]['cantidad'] = 1
+        tercera = self.client.post(
+            '/api/public/pedidos/crear/',
+            payload,
+            format='json',
+            HTTP_IDEMPOTENCY_KEY='checkout-1',
+        )
+        self.assertEqual(tercera.status_code, 409)
+
+    def test_payload_malformado_no_produce_error_500(self):
+        self.client.force_authenticate(user=self.cliente)
+        casos = [
+            {'bodega_id': []},
+            {'metodo_entrega': []},
+            {'items': [{'id': [], 'cantidad': 1}]},
+            {'items': [{'id': self.producto.id, 'cantidad': 'abc'}]},
+        ]
+
+        for caso in casos:
+            payload = {
+                'bodega_id': self.bodega.id,
+                'nombre_cliente': 'Cliente Test',
+                'telefono_cliente': '999999999',
+                'direccion_entrega': 'Calle Falsa 123',
+                'metodo_entrega': 'DELIVERY',
+                'metodo_pago': 'CONTRA_ENTREGA',
+                'cliente_lat': -12.046374,
+                'cliente_lng': -77.042793,
+                'items': [{'id': self.producto.id, 'cantidad': 1}],
+            }
+            payload.update(caso)
+            res = self.client.post(
+                '/api/public/pedidos/crear/', payload, format='json'
+            )
+            self.assertEqual(res.status_code, 400, res.data)
+
+
+class IDORTests(BaseApiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.otro = User.objects.create_user(
+            username='otro_bodeguero',
+            email='otro_bodeguero@test.com',
+            password='secret123',
+            rol='BODEGUERO',
+        )
+        self.otra_bodega = Bodega.objects.create(
+            usuario=self.otro,
+            nombre_comercial='Otra Bodega',
+            direccion='Av. Otra 456',
+            latitud=-12.046374,
+            longitud=-77.042793,
+        )
+
+    def test_no_puede_acceder_a_producto_ajeno(self):
+        self.client.force_authenticate(user=self.otro)
+
+        res = self.client.get(f'/api/bodega/productos/{self.producto.id}/')
+        self.assertEqual(res.status_code, 404)
+
+        res = self.client.put(
+            f'/api/bodega/productos/{self.producto.id}/',
+            {'nombre': 'Hackeado', 'precio': '1.00', 'stock': '1', 'categoria': self.categoria.id},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+        res = self.client.delete(f'/api/bodega/productos/{self.producto.id}/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_no_puede_eliminar_categoria_ajena(self):
+        self.client.force_authenticate(user=self.otro)
+        res = self.client.delete(f'/api/bodega/categorias/{self.categoria.id}/')
+        self.assertEqual(res.status_code, 404)
+
+    def test_no_puede_cambiar_estado_de_pedido_ajeno(self):
+        res = self.crear_pedido()
+        pedido_id = res.data['pedido_id']
+
+        self.client.force_authenticate(user=self.otro)
+        res = self.client.patch(
+            f'/api/bodega/pedidos/{pedido_id}/estado/',
+            {'estado': 'EN_PREPARACIÓN'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, 404)
+
+
+class ProductoImagenTests(BaseApiTestCase):
+    def test_fallo_de_cloudinary_no_deja_producto_parcial(self):
+        self.client.force_authenticate(user=self.user)
+        png = base64.b64decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk'
+            '+A8AAQUBAScY42YAAAAASUVORK5CYII='
+        )
+        archivo = SimpleUploadedFile('foto.png', png, content_type='image/png')
+
+        with patch('api.serializers.cloudinary.uploader.upload', side_effect=Exception('boom')):
+            res = self.client.post(
+                '/api/bodega/productos/',
+                {
+                    'nombre': 'Producto parcial',
+                    'precio': '1.00',
+                    'stock': '1',
+                    'categoria': self.categoria.id,
+                    'imagen_file': archivo,
+                },
+                format='multipart',
+            )
+
+        self.assertEqual(res.status_code, 400)
+        self.assertFalse(
+            Producto.objects.filter(nombre='Producto parcial').exists()
+        )
+
+
+class PaginacionTests(BaseApiTestCase):
+    def test_listado_pedidos_esta_paginado(self):
+        Pedido.objects.bulk_create([
+            Pedido(
+                bodega=self.bodega,
+                cliente=self.cliente,
+                nombre_cliente=f'Cliente {i}',
+                telefono_cliente='999999999',
+                direccion_entrega='Calle Falsa 123',
+                total=10.00,
+            )
+            for i in range(25)
+        ])
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.get('/api/bodega/pedidos/')
+
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['count'], 25)
+        self.assertEqual(len(res.data['results']), 20)
+        self.assertIsNotNone(res.data['next'])
+
+
+class HistorialPedidoTests(BaseApiTestCase):
+    def test_eliminar_producto_conserva_el_detalle_historico(self):
+        res = self.crear_pedido()
+        self.assertEqual(res.status_code, 201, res.data)
+        pedido_id = res.data['pedido_id']
+
+        self.client.force_authenticate(user=self.user)
+        res = self.client.delete(f'/api/bodega/productos/{self.producto.id}/')
+        self.assertEqual(res.status_code, 204, res.data)
+
+        detalle = DetallePedido.objects.get(pedido_id=pedido_id)
+        self.assertIsNone(detalle.producto)
+        self.assertEqual(detalle.producto_nombre, 'Agua 600ml')
 
 
 class CambiarEstadoPedidoTests(BaseApiTestCase):

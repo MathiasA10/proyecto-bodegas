@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock,
+  HelpCircle,
   LogIn,
   LogOut,
   MapPin,
@@ -23,9 +24,9 @@ import {
 } from 'lucide-react';
 
 import api from '../api/client';
+import { useAuth } from '../hooks/useAuth';
 import { useCart } from '../hooks/useCart';
 import { useGeolocation } from '../hooks/useGeolocation';
-import { cerrarSesion, estaAutenticado, getRol } from '../utils/auth';
 import { LIMA_CENTRO, formatearDistancia } from '../utils/geo';
 import '../utils/fixLeafletIcon';
 
@@ -48,6 +49,7 @@ export default function MapaCliente() {
   const [cargando, setCargando] = useState(true);
   const [centroMapa, setCentroMapa] = useState(LIMA_CENTRO);
   const navigate = useNavigate();
+  const { usuario, cerrarSesion } = useAuth();
   const { bodega: carritoBodega, cantidadTotal, total } = useCart();
 
   const { coords, error: geoError, loading: geoLoading, solicitar } =
@@ -102,8 +104,8 @@ export default function MapaCliente() {
     navigate(`/tienda/${bodega.id}`);
   };
 
-  const salir = () => {
-    cerrarSesion();
+  const salir = async () => {
+    await cerrarSesion();
     navigate('/');
   };
 
@@ -136,11 +138,22 @@ export default function MapaCliente() {
             <Navigation size={14} />
             {geoLoading ? 'Ubicando...' : 'Mi ubicación'}
           </button>
-          {estaAutenticado() ? (
+          <button
+            type="button"
+            onClick={() => navigate('/ayuda')}
+            aria-label="Centro de ayuda"
+            className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
+          >
+            <HelpCircle size={14} />
+            <span className="hidden sm:inline">Ayuda</span>
+          </button>
+          {usuario ? (
             <>
-              {getRol() === 'CLIENTE' ? (
+              {usuario.rol === 'CLIENTE' ? (
                 <button
+                  type="button"
                   onClick={() => navigate('/mis-pedidos')}
+                  aria-label="Mis pedidos"
                   className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                 >
                   <ClipboardList size={14} />
@@ -148,7 +161,9 @@ export default function MapaCliente() {
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={() => navigate('/bodega/dashboard')}
+                  aria-label="Mi panel"
                   className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
                 >
                   <Store size={14} />
@@ -156,7 +171,9 @@ export default function MapaCliente() {
                 </button>
               )}
               <button
+                type="button"
                 onClick={salir}
+                aria-label="Cerrar sesión"
                 className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
               >
                 <LogOut size={14} />
@@ -165,7 +182,9 @@ export default function MapaCliente() {
             </>
           ) : (
             <button
+              type="button"
               onClick={() => navigate('/')}
+              aria-label="Iniciar sesión"
               className="flex items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 transition hover:bg-slate-50"
             >
               <LogIn size={14} />

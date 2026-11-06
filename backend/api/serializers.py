@@ -1,6 +1,9 @@
+import logging
 import re
 
 import cloudinary.uploader
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
@@ -13,10 +16,14 @@ from .models import (
 )
 
 TELEFONO_PERU_RE = re.compile(r'^9\d{8}$')
+logger = logging.getLogger(__name__)
+
+TAMANO_MAXIMO_IMAGEN = 5 * 1024 * 1024
+FORMATOS_PERMITIDOS = {'image/jpeg', 'image/png', 'image/webp'}
 
 
 class RegistroUsuarioSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
+    password = serializers.CharField(write_only=True, min_length=8)
 
     class Meta:
         model = Usuario
@@ -27,6 +34,19 @@ class RegistroUsuarioSerializer(serializers.ModelSerializer):
             'dni': {'required': False, 'allow_blank': True},
             'rol': {'required': False},
         }
+
+    def validate_password(self, value):
+        usuario = Usuario(
+            username=self.initial_data.get('username', ''),
+            email=self.initial_data.get('email', ''),
+            first_name=self.initial_data.get('first_name', ''),
+            last_name=self.initial_data.get('last_name', ''),
+        )
+        try:
+            validate_password(value, usuario)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(list(exc.messages)) from exc
+        return value
 
     def create(self, validated_data):
         password = validated_data.pop('password')
@@ -100,12 +120,24 @@ class ProductoSerializer(serializers.ModelSerializer):
             )
         return value
 
+    def validate_imagen_file(self, value):
+        if value.size > TAMANO_MAXIMO_IMAGEN:
+            raise serializers.ValidationError(
+                'La imagen no puede superar los 5 MB.'
+            )
+        if value.content_type not in FORMATOS_PERMITIDOS:
+            raise serializers.ValidationError(
+                'La imagen debe ser JPG, PNG o WebP.'
+            )
+        return value
+
     def _subir_imagen(self, archivo, bodega_id):
         try:
             resultado = cloudinary.uploader.upload(
                 archivo,
                 folder=f'bodegas/{bodega_id}/productos',
                 resource_type='image',
+                allowed_formats=['jpg', 'png', 'webp'],
             )
         except Exception as exc:
             raise serializers.ValidationError(
@@ -119,13 +151,19 @@ class ProductoSerializer(serializers.ModelSerializer):
         try:
             cloudinary.uploader.destroy(public_id, resource_type='image')
         except Exception:
-            pass
+            logger.exception(
+                'No se pudo eliminar la imagen %s de Cloudinary.', public_id
+            )
 
     def create(self, validated_data):
         archivo = validated_data.pop('imagen_file', None)
         producto = super().create(validated_data)
         if archivo:
-            url, public_id = self._subir_imagen(archivo, producto.bodega_id)
+            try:
+                url, public_id = self._subir_imagen(archivo, producto.bodega_id)
+            except serializers.ValidationError:
+                producto.delete()
+                raise
             producto.imagen = url
             producto.imagen_public_id = public_id
             producto.save(update_fields=['imagen', 'imagen_public_id'])
@@ -142,7 +180,7 @@ class ProductoSerializer(serializers.ModelSerializer):
 
 
 class DetallePedidoSerializer(serializers.ModelSerializer):
-    producto_nombre = serializers.ReadOnlyField(source='producto.nombre')
+    producto_nombre = serializers.CharField(read_only=True)
 
     class Meta:
         model = DetallePedido
